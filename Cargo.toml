@@ -1,0 +1,22 @@
+[package]
+name = "snowballz"
+default-run = "snowballz"
+version = "0.9.8"  # Cargo needs three numbers: the version players see is in VERSION
+edition = "2021"
+description = "A fun RTS game featuring snowball fights with penguins (Rust port)."
+license = "GPL-2.0-or-later"
+readme = "README.md"
+
+# No dependencies: SDL2 (and, for music, libvorbisfile) are loaded at run
+# time, and the PNG / JPEG / zip / TrueType decoders are part of the game, so
+# `cargo build` works offline and needs no development packages.
+[dependencies]
+
+[profile.dev]
+# Image decoding and terrain building are far too slow without optimisation.
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

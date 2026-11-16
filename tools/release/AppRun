@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: the game finds its data next to the program.
+HERE="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+exec "$HERE/snowballz" "$@"

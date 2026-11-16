@@ -1,0 +1,22 @@
+Snowballz @VERSION@ for Windows (64-bit)
+==================================
+
+Start the game: double-click snowballz.exe.
+Keep SDL2.dll and the data, maps and plugins folders next to it.
+
+The first time Windows may show "Windows protected your PC" (the game is
+not signed): click "More info", then "Run anyway".
+
+Online games: Online > Host a game.  The game opens TCP port 5555 on your
+router by itself (UPnP) and the lobby shows the address to give your
+friends, with a Copy button.  They choose Online > Join a game and paste it
+(Ctrl+V).  If the router can't do it automatically, the lobby says how to
+forward the port by hand.
+The first time you host, Windows Firewall asks about snowballz.exe: click
+"Allow access".  If friends still can't get in, open Windows Security >
+Firewall & network protection > Allow an app through firewall, and tick
+Snowballz for the kind of network you are on (Private or Public).
+
+Settings:      %APPDATA%\SnowballZ.ini
+Crash reports: %APPDATA%\SnowballZ_crash.log  (please send it with bug reports)
+Controls: see README.md.

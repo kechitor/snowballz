@@ -1,0 +1,25 @@
+Snowballz @VERSION@ for macOS (Apple Silicon and Intel, macOS 10.13+)
+==============================================================
+
+Drag Snowballz.app to your Applications folder and open it.
+
+The game is not signed by Apple, so the first time macOS refuses to open
+it.  Then:
+  * macOS 15 or newer: System Settings > Privacy & Security, scroll down,
+    click "Open Anyway" next to Snowballz, and confirm.
+  * older macOS: right-click (Ctrl-click) Snowballz.app > Open > Open.
+  * or in Terminal:  xattr -dr com.apple.quarantine /Applications/Snowballz.app
+
+Everything the game needs (SDL2, music) is inside the app.
+Settings:      ~/.snowballz.ini
+Crash reports: ~/.snowballz_crash.log  (please send it with bug reports)
+Online games: Online > Host a game.  The game opens TCP port 5555 on your
+router by itself (UPnP) and the lobby shows the address to give your
+friends, with a Copy button.  They choose Online > Join a game and paste it
+(Ctrl+V).  If the router can't do it automatically, the lobby says how to
+forward the port by hand.
+The first time you host, macOS asks whether Snowballz may accept incoming
+network connections, and (macOS 15 and newer) whether it may find devices
+on your local network: click Allow for both (the second one is how it
+talks to your router).
+Controls: see README.md.

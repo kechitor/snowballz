@@ -1,0 +1,5 @@
+# The relay server for game codes, as host:port (port 5555 if left out),
+# for example:   relay.example.org:5555
+# Builds made from this file show a game code in the lobby. Leave it empty
+# (or write "off") for no codes. Players can override it in their settings
+# file:  [network]  relay = host:port

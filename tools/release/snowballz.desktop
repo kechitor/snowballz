@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Snowballz
+Comment=Snowball fight strategy game with penguins
+Exec=snowballz
+Icon=snowballz
+Terminal=false
+Categories=Game;StrategyGame;

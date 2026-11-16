@@ -1,0 +1,64 @@
+Snowballz relay server @VERSION@
+==============================
+
+The relay lets players join a hosted game by typing a short game code, with
+no port forwarding or UPnP on anybody's router. The host and every player
+connect *out* to the relay, and it passes the game's traffic between them.
+
+It has to run on a computer that the internet can reach: a small cloud
+server (a virtual machine with a public IP address). The game sends very
+little data, so the smallest server is enough; one relay serves many games.
+Pick a server close to your players (for players in Turkey: a European
+data centre such as Frankfurt, Amsterdam or Milan).
+
+Which package
+-------------
+  snowballz-relay-@VERSION@-linux-x64.tar.gz     normal (Intel / AMD) servers
+  snowballz-relay-@VERSION@-linux-arm64.tar.gz   ARM servers (for example
+                                                 Oracle Cloud "Ampere")
+Both are single programs that run on any Linux; nothing else to install.
+
+Set it up (on the server, as a user with sudo)
+------------------------------------------------
+1. Copy the package to the server and unpack it:
+       tar -xzf snowballz-relay-@VERSION@-linux-*.tar.gz
+       cd snowballz-relay-@VERSION@-linux-*
+2. Install the program and start it now and at every boot:
+       sudo cp snowballz-relay /usr/local/bin/
+       sudo cp snowballz-relay.service /etc/systemd/system/
+       sudo systemctl daemon-reload
+       sudo systemctl enable --now snowballz-relay
+3. Let TCP port 5555 in:
+   * in the cloud provider's firewall: add an "ingress" / "inbound" rule
+     for TCP port 5555 from 0.0.0.0/0 (Oracle Cloud: Networking > Virtual
+     Cloud Networks > your network > Security Lists > Add Ingress Rules).
+   * and in the server's own firewall, if it has one:
+       Ubuntu with ufw:      sudo ufw allow 5555/tcp
+       Oracle Cloud Ubuntu:  sudo iptables -I INPUT -p tcp --dport 5555 -j ACCEPT
+                             sudo netfilter-persistent save
+       firewalld:            sudo firewall-cmd --permanent --add-port=5555/tcp
+                             sudo firewall-cmd --reload
+4. Check that it runs:
+       sudo systemctl status snowballz-relay
+       journalctl -u snowballz-relay -f      (shows games opening and closing)
+
+Tell the game about it
+----------------------
+* For everybody: put the server's address in the RELAY file of the game's
+  source (for example  203.0.113.7:5555  or  relay.example.org:5555) and
+  make a new release. Every copy of that release shows a game code when
+  hosting.
+* Or for one computer: in the game's settings file (~/.snowballz.ini, on
+  Windows %APPDATA%\SnowballZ.ini) add
+       [network]
+       relay = 203.0.113.7:5555
+  The host and the players must use the same relay.
+
+Options
+-------
+  snowballz-relay --port 5555 --max-rooms 500
+  (or the PORT environment variable). Change the port in the .service file
+  and in the firewall rules too, and add it to the address (host:port).
+
+The relay keeps no files and logs no addresses, only the number of games.
+Licence: GPL v2 or later (LICENSE).

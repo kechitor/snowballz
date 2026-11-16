@@ -1,0 +1,130 @@
+# Builds the release packages for Linux, Windows and macOS, and the relay
+# server for Linux (x64 and ARM).
+#  * publish a release on GitHub (Releases > Draft a new release, tag v0.9.8.2)
+#    -> each package is added to that release as soon as it is built (a
+#       slow macOS queue doesn't hold back the others)
+#  * or run it by hand (Actions tab > Release > Run workflow): with a release
+#    tag (like v0.9.8.2) the packages are added to that release, without one
+#    they are attached to the run as artifacts
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Add the packages to this existing release (like v0.9.8.2); leave empty to just build"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  SDL2_VERSION: "2.32.10"
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libsdl2-2.0-0
+      - name: Get appimagetool
+        continue-on-error: true
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+      - run: cargo test --release --locked
+      - run: bash tools/make-release.sh linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snowballz-linux
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+      - if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            dist/*.tar.gz
+            dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --release --locked
+      - run: powershell -ExecutionPolicy Bypass -File tools\make-release.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snowballz-windows
+          path: dist/*-windows-x64.zip
+      - if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo test --release --locked
+      - run: bash tools/make-release.sh macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snowballz-macos
+          path: dist/*-macos.zip
+      - if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*-macos.zip
+
+  # the relay server for game codes: a static Linux program (musl), built
+  # on a machine of each kind
+  relay:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup target add ${{ matrix.target }}
+      - run: cargo test --release --locked --bin snowballz-relay
+      - run: bash tools/make-release.sh relay ${{ matrix.target }} ${{ matrix.arch }}
+      - name: Check it is a static program that starts
+        run: |
+          f=$(ls dist/snowballz-relay-*/snowballz-relay)
+          file "$f"
+          timeout 2 "$f" --port 15555 || [ $? = 124 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snowballz-relay-${{ matrix.arch }}
+          path: dist/snowballz-relay-*.tar.gz
+      - if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/snowballz-relay-*.tar.gz

@@ -37,6 +37,9 @@ pub struct Hooks {
     pub skip_end: bool,
     /// a chat line to say once the game runs
     pub say: Option<String>,
+    /// (server / single player) the local player's igloos go to an AI
+    /// after this many milliseconds: a quick defeat for tests
+    pub lose_after: Option<u32>,
 }
 
 impl Hooks {
@@ -59,6 +62,7 @@ impl Hooks {
             stats: num("SNOWBALLZ_STATS"),
             skip_end: std::env::var("SNOWBALLZ_SKIP_END").is_ok(),
             say: std::env::var("SNOWBALLZ_SAY").ok(),
+            lose_after: num("SNOWBALLZ_LOSE_AFTER"),
         }
     }
 }
@@ -76,6 +80,14 @@ pub struct Session {
     pub cursor: Tex,
     pub use_cursor: bool,
     pub minimap: Minimap,
+    /// the Escape menu, while it is open
+    pub game_menu: Option<crate::game_menu::GameMenu>,
+    /// a single player game (the Escape menu pauses it)
+    pub single: bool,
+    /// hosting an online game (quitting ends it for everybody)
+    pub hosting_online: bool,
+    /// the player chose Quit game
+    pub quit_requested: bool,
 }
 
 pub struct Game {
@@ -242,6 +254,10 @@ impl Game {
             cursor: self.cursor,
             use_cursor,
             minimap,
+            game_menu: None,
+            single: self.kind == GameType::Single,
+            hosting_online: self.kind == GameType::Server,
+            quit_requested: false,
         });
         self.mapname = mapname.to_string();
         self.world = Some(w);
@@ -608,8 +624,8 @@ impl Game {
                 }
             }
         }
-        let fps_cap = settings::fps_cap();
         while self.running {
+            let fps_cap = settings::fps_cap();
             if self.is_server() {
                 self.guarded(|g| g.ai_loop());
             }
@@ -618,15 +634,28 @@ impl Game {
                 self.check_connection();
             }
             self.frame(fps_cap);
-            let w = self.world.as_ref().unwrap();
+            // the game is over when somebody has won; a defeated player
+            // keeps watching (and the host keeps the game going)
+            let w = self.world.as_mut().unwrap();
             if let Some(me) = w.me {
-                if w.players.get(&me).and_then(|p| p.victory).is_some() {
+                let mine = w.players.get(&me).and_then(|p| p.victory);
+                let someone_won = w.players.values().any(|p| p.victory == Some(true));
+                if mine == Some(true) || someone_won {
                     self.running = false;
+                } else if mine == Some(false) && !w.spectating {
+                    w.spectating = true;
+                    for &u in &w.selected {
+                        w.units[u].selected = false;
+                    }
+                    w.selected.clear();
+                    w.notice("You were defeated. You can keep watching the game; press Esc for the menu.");
                 }
             }
         }
+        clock::set_paused(false);
         audio::fade_out(1000);
-        if self.disconnected_at.is_none() {
+        let quit = self.session.as_ref().map(|s| s.quit_requested).unwrap_or(false);
+        if self.disconnected_at.is_none() && !quit {
             self.end_screen();
         }
     }
@@ -654,7 +683,11 @@ impl Game {
     }
 
     fn frame(&mut self, fps_cap: u32) {
-        let dt = self.clock.tick(fps_cap).min(144);
+        let mut dt = self.clock.tick(fps_cap).min(144);
+        // a paused single player game stands still
+        if clock::is_paused() {
+            dt = 0;
+        }
         let fps = self.clock.fps();
         self.hooks_tick();
         self.guarded(|g| {
@@ -695,6 +728,18 @@ impl Game {
                 self.last_stats = elapsed;
                 if let Some(w) = self.world.as_ref() {
                     println!("STATS t={} {}", elapsed, stats_line(w));
+                }
+            }
+        }
+        if let Some(t) = self.hooks.lose_after {
+            if elapsed > t && self.is_server() {
+                self.hooks.lose_after = None;
+                if let Some(w) = self.world.as_mut() {
+                    let ai = w.players.values().filter(|p| p.kind == PlayerKind::Ai).map(|p| p.id).min();
+                    let mine: Vec<usize> = (0..w.regions.len()).filter(|&r| w.regions[r].player.is_some() && w.regions[r].player == w.me).collect();
+                    for r in mine {
+                        w.set_region_player(r, ai);
+                    }
                 }
             }
         }

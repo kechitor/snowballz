@@ -1,12 +1,14 @@
 //! Input in the game (ctrl.py): selecting, giving orders, scrolling,
 //! zooming, groups, chat.
 
+use crate::clock;
 use crate::game::Session;
 use crate::gfx;
 use crate::hud::{self, PanelClick};
 use crate::menu;
 use crate::net::Msg;
 use crate::sdl;
+use crate::settings;
 use crate::unit;
 use crate::world::*;
 
@@ -347,6 +349,29 @@ pub fn chat_backspace_repeat(w: &mut World) {
 /// Handle input; false = leave the game.
 pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
     for e in gfx::events() {
+        // the Escape menu takes every event while it is open
+        if let Some(mut m) = s.game_menu.take() {
+            if e.kind() == sdl::QUIT {
+                crate::quit(0);
+            }
+            match m.handle(&e) {
+                None => s.game_menu = Some(m),
+                Some(crate::game_menu::Outcome::Resume) => clock::set_paused(false),
+                Some(crate::game_menu::Outcome::Quit) => {
+                    clock::set_paused(false);
+                    s.quit_requested = true;
+                    return false;
+                }
+            }
+            // settings the game keeps for itself
+            w.footprints = settings::get_option("footprints") != "0";
+            let cursor = settings::get_option("cursor") == "1";
+            if cursor != s.use_cursor {
+                s.use_cursor = cursor;
+                sdl::show_cursor(!cursor);
+            }
+            continue;
+        }
         match e.kind() {
             sdl::QUIT => crate::quit(0),
             sdl::MOUSEWHEEL => {
@@ -370,13 +395,21 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                 }
                 match key {
                     sdl::K_ESCAPE => {
-                        // twice: a stray Escape used to end the game
-                        let now = sdl::ticks();
-                        if w.last_escape != 0 && now.wrapping_sub(w.last_escape) < 2000 {
-                            return false;
+                        let title = if w.spectating {
+                            "You were defeated"
+                        } else if s.single {
+                            "Game paused"
+                        } else {
+                            "Menu"
+                        };
+                        let note = if s.hosting_online { Some("You are the host: quitting ends the game for everybody.") } else { None };
+                        s.game_menu = Some(crate::game_menu::GameMenu::new(title, note));
+                        w.select_box_start = None;
+                        w.holding_mouse = false;
+                        w.draw_minimap = false;
+                        if s.single {
+                            clock::set_paused(true);
                         }
-                        w.last_escape = now;
-                        w.notice("Press Escape again to quit");
                     }
                     sdl::K_F3 => w.show_fps = !w.show_fps,
                     sdl::K_F11 => {
@@ -459,6 +492,9 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
             }
             _ => {}
         }
+    }
+    if s.game_menu.is_some() {
+        return true; // no scrolling behind the menu
     }
     chat_backspace_repeat(w);
 

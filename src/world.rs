@@ -626,7 +626,8 @@ pub struct World {
     pub chat_font: Font,
     pub stat_font: Font,
     pub draw_buffer: Vec<Rendered>,
-    pub last_escape: u32,
+    /// the local player was defeated and watches the rest of the game
+    pub spectating: bool,
     pub holding_mouse: bool,
 }
 
@@ -730,7 +731,7 @@ impl World {
             chat_font,
             stat_font,
             draw_buffer: Vec::new(),
-            last_escape: 0,
+            spectating: false,
             holding_mouse: false,
         };
 

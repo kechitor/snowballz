@@ -39,6 +39,7 @@ mod ctrl;
 mod display;
 mod effects;
 mod game;
+mod game_menu;
 mod gfx;
 mod hud;
 mod igloo;

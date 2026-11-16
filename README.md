@@ -126,7 +126,7 @@ Controls
 | `C` | clear the chat messages |
 | `F3` | show / hide the FPS counter |
 | `F11` | fullscreen on / off (works in the menu too) |
-| `Escape` twice | leave the game |
+| `Escape` | the game menu: *Return to game*, *Settings* (sound, graphics), *Quit game*; a single player game pauses while it is open |
 
 Settings
 --------
@@ -182,6 +182,10 @@ The computer that hosts a game is the server; nothing else is needed.
   section of the settings file.
 * Joining gives up after 6 seconds, and the menu says why (nobody is hosting
   there, no answer, unknown name...).
+* A player who loses their last igloo is not thrown out: they keep watching
+  the game (a *Spectating* banner shows it) until somebody wins, or leave with
+  `Escape` -> *Quit game*. This includes the host, whose computer keeps the
+  game going for the others.
 * If a player leaves, the host's AI takes over their penguins and the game goes
   on. If the host leaves, the other players are sent back to the menu with a
   message.

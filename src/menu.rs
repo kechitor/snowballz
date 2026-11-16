@@ -95,7 +95,7 @@ pub fn list_maps() -> Vec<MapInfo> {
     out
 }
 
-fn bottom_bar(page: &mut Page, buttons: Vec<Button>) {
+pub fn bottom_bar(page: &mut Page, buttons: Vec<Button>) {
     let mut ws: Vec<Widget> = buttons.into_iter().map(Widget::Button).collect();
     {
         let mut refs: Vec<&mut Widget> = ws.iter_mut().collect();
@@ -124,6 +124,104 @@ fn option_row(panel: &mut Panel, option: &str, values: &[&str], label: &str, lab
     l.min_width = 180;
     l.set_text(&format!("{}:", label));
     panel.add_row(vec![Widget::Label(l), Widget::Button(Button::switch(option, &current, values, &labels))]);
+}
+
+/// The settings rows.  `in_game`: only those that can change during a
+/// game (no resolution, game scale or name).
+pub fn settings_panel(in_game: bool) -> Panel {
+    let mut panel = Panel::new(if in_game { 20 } else { 0 }, 2, 8);
+    option_row(&mut panel, "fullscreen", &["0", "1"], "Fullscreen", &["Off", "On"]);
+    if !in_game {
+        let ress = settings::res_available();
+        let reslabels: Vec<String> = ress.iter().map(|r| format!("{} x {}", r.0, r.1)).collect();
+        let reses: Vec<String> = (0..ress.len()).map(|i| i.to_string()).collect();
+        option_row(
+            &mut panel,
+            "resolution",
+            &reses.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "Resolution",
+            &reslabels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        );
+        option_row(&mut panel, "gamescale", &["1", "2", "3", "4"], "Game scale", &["Auto", "1x", "1.5x", "2x"]);
+    }
+    option_row(&mut panel, "smooth", &["0", "1"], "Smooth scaling", &["Off", "On"]);
+    option_row(&mut panel, "fpscap", &["1", "2", "3"], "Frame rate", &["60 fps", "35 fps (original)", "Unlimited"]);
+    option_row(&mut panel, "daynight", &["0", "1"], "Day/Night cycles", &["Off", "On"]);
+    option_row(&mut panel, "smoke", &["0", "1"], "Smoke", &["Off", "On"]);
+    option_row(&mut panel, "footprints", &["0", "1"], "Footprints", &["Off", "On"]);
+    option_row(&mut panel, "snowballdetail", &["1", "2", "3"], "Snowball detail", &["Low", "Medium", "High"]);
+    for (key, label) in [("volume", "Volume:"), ("music", "Music:")] {
+        let mut l = Label::new(label, 16, 0, 0);
+        l.min_width = 180;
+        l.set_text(label);
+        panel.add_row(vec![Widget::Label(l), Widget::Slider(Slider::new(key, settings::sound_level(key), 150))]);
+    }
+    if !in_game {
+        let mut name = Input::new(&settings::player_name(), 150, 16);
+        name.is_name = true;
+        let mut nl = Label::new("Name:", 16, 0, 0);
+        nl.min_width = 180;
+        nl.set_text("Name:");
+        panel.add_row(vec![Widget::Label(nl), Widget::Input(name)]);
+    }
+    option_row(&mut panel, "cursor", &["0", "1"], "Ice Cursor", &["Off", "On"]);
+    panel
+}
+
+/// Apply a settings change (a switch or a slider).  Returns false if
+/// fullscreen could not be switched on (the setting is then "0").
+pub fn apply_setting(a: &Action) -> bool {
+    match a {
+        Action::Option(opt, value) => {
+            settings::set_option(opt, value);
+            match opt.as_str() {
+                "fullscreen" => {
+                    if !gfx::set_fullscreen(value == "1") {
+                        settings::set_option("fullscreen", "0");
+                        return false;
+                    }
+                }
+                "resolution" => {
+                    let (w, h) = settings::get_res();
+                    gfx::set_resolution(w, h);
+                }
+                "smooth" => gfx::set_smooth(value == "1"),
+                _ => {}
+            }
+        }
+        Action::Level(key, value, released) => {
+            let (mut volume, mut music) = (settings::sound_level("volume"), settings::sound_level("music"));
+            match key.as_str() {
+                "volume" => volume = *value,
+                _ => music = *value,
+            }
+            crate::audio::set_levels(volume, music);
+            if *released {
+                settings::set_sound_level(key, *value);
+            }
+        }
+        Action::NameChanged(n) => {
+            if !n.is_empty() {
+                settings::set_player_name(n);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+/// The fullscreen switch in a settings panel.
+pub fn fullscreen_switch(panel: &mut Panel) -> Option<&mut Button> {
+    for row in panel.rows.iter_mut() {
+        for e in row.iter_mut() {
+            if let Widget::Button(b) = e {
+                if b.switch.as_ref().map(|s| s.0 == "fullscreen").unwrap_or(false) {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    None
 }
 
 impl Menu {
@@ -179,38 +277,7 @@ impl Menu {
         );
 
         // settings
-        let mut panel = Panel::new(0, 2, 8);
-        option_row(&mut panel, "fullscreen", &["0", "1"], "Fullscreen", &["Off", "On"]);
-        let ress = settings::res_available();
-        let reslabels: Vec<String> = ress.iter().map(|r| format!("{} x {}", r.0, r.1)).collect();
-        let reses: Vec<String> = (0..ress.len()).map(|i| i.to_string()).collect();
-        option_row(
-            &mut panel,
-            "resolution",
-            &reses.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            "Resolution",
-            &reslabels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-        );
-        option_row(&mut panel, "gamescale", &["1", "2", "3", "4"], "Game scale", &["Auto", "1x", "1.5x", "2x"]);
-        option_row(&mut panel, "smooth", &["0", "1"], "Smooth scaling", &["Off", "On"]);
-        option_row(&mut panel, "fpscap", &["1", "2", "3"], "Frame rate", &["60 fps", "35 fps (original)", "Unlimited"]);
-        option_row(&mut panel, "daynight", &["0", "1"], "Day/Night cycles", &["Off", "On"]);
-        option_row(&mut panel, "smoke", &["0", "1"], "Smoke", &["Off", "On"]);
-        option_row(&mut panel, "footprints", &["0", "1"], "Footprints", &["Off", "On"]);
-        option_row(&mut panel, "snowballdetail", &["1", "2", "3"], "Snowball detail", &["Low", "Medium", "High"]);
-        for (key, label) in [("volume", "Volume:"), ("music", "Music:")] {
-            let mut l = Label::new(label, 16, 0, 0);
-            l.min_width = 180;
-            l.set_text(label);
-            panel.add_row(vec![Widget::Label(l), Widget::Slider(Slider::new(key, settings::sound_level(key), 150))]);
-        }
-        let mut name = Input::new(&settings::player_name(), 150, 16);
-        name.is_name = true;
-        let mut nl = Label::new("Name:", 16, 0, 0);
-        nl.min_width = 180;
-        nl.set_text("Name:");
-        panel.add_row(vec![Widget::Label(nl), Widget::Input(name)]);
-        option_row(&mut panel, "cursor", &["0", "1"], "Ice Cursor", &["Off", "On"]);
+        let panel = settings_panel(false);
         bottom_bar(&mut pages[2], vec![Button::new("Back", Action::Page(0))]);
         pages[2].add(Widget::Panel(panel));
 
@@ -306,15 +373,7 @@ impl Menu {
     fn fullscreen_switch(&mut self) -> Option<&mut Button> {
         for w in self.pages[2].widgets.iter_mut() {
             if let Widget::Panel(p) = w {
-                for row in p.rows.iter_mut() {
-                    for e in row.iter_mut() {
-                        if let Widget::Button(b) = e {
-                            if b.switch.as_ref().map(|s| s.0 == "fullscreen").unwrap_or(false) {
-                                return Some(b);
-                            }
-                        }
-                    }
-                }
+                return fullscreen_switch(p);
             }
         }
         None
@@ -408,41 +467,14 @@ impl Menu {
                 let map = self.maps.get(self.cur_map).map(|m| m.filename.clone()).unwrap_or_default();
                 self.result = Some((map, GameType::Client(host)));
             }
-            Action::Option(opt, value) => {
-                settings::set_option(&opt, &value);
-                match opt.as_str() {
-                    "fullscreen" => {
-                        if !gfx::set_fullscreen(value == "1") {
-                            settings::set_option("fullscreen", "0");
-                            if let Some(b) = self.fullscreen_switch() {
-                                b.set_value("0");
-                            }
-                        }
+            a @ (Action::Option(..) | Action::Level(..) | Action::NameChanged(_)) => {
+                if !apply_setting(&a) {
+                    if let Some(b) = self.fullscreen_switch() {
+                        b.set_value("0");
                     }
-                    "resolution" => {
-                        let (w, h) = settings::get_res();
-                        gfx::set_resolution(w, h);
-                    }
-                    "smooth" => gfx::set_smooth(value == "1"),
-                    _ => {}
                 }
             }
-            Action::Level(key, value, released) => {
-                let (mut volume, mut music) = (settings::sound_level("volume"), settings::sound_level("music"));
-                match key.as_str() {
-                    "volume" => volume = value,
-                    _ => music = value,
-                }
-                crate::audio::set_levels(volume, music);
-                if released {
-                    settings::set_sound_level(&key, value);
-                }
-            }
-            Action::NameChanged(n) => {
-                if !n.is_empty() {
-                    settings::set_player_name(&n);
-                }
-            }
+            Action::Resume => {}
         }
     }
 

@@ -117,6 +117,8 @@ pub enum Action {
     /// a slider moved: (option name, percent, released: save it now)
     Level(String, u8, bool),
     NameChanged(String),
+    /// the in-game menu: back to the game
+    Resume,
 }
 
 pub struct Label {

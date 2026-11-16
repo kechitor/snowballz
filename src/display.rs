@@ -279,6 +279,17 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
     if w.show_fps {
         w.chat_font.render(sw - 130.0, sh - 30.0, &format!("FPS: {}", s.fps.round() as i64), [1.0, 1.0, 0.3, 1.0]);
     }
+    if w.spectating {
+        // a banner at the bottom
+        let text = "Spectating - you were defeated  (Esc: menu)";
+        let (tw, th) = w.chat_font.size_of(text);
+        let (x, y) = ((sw - tw as f64) / 2.0, 12.0);
+        gfx::fill_rect(x - 12.0, y - 6.0, tw as f64 + 24.0, th as f64 + 12.0, Some([0.0, 0.0, 0.0, 0.55]));
+        w.chat_font.render(x, y, text, [1.0, 1.0, 1.0, 1.0]);
+    }
+    if let Some(m) = &s.game_menu {
+        m.draw();
+    }
     if s.use_cursor {
         let (mx, my) = gfx::mouse_pos();
         s.cursor.draw(mx as f64, sh - 64.0 - my as f64, [1.0; 4], 1.0);

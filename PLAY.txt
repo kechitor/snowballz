@@ -1,0 +1,27 @@
+Snowballz 0.9.8.5 for Linux (x86-64)
+================================
+
+AppImage:         make snowballz-0.9.8.5-x86_64.AppImage executable
+                  (file Properties > "Allow executing as program", or
+                  chmod +x) and double-click it.  If it says FUSE is
+                  missing, install fuse (sudo apt install libfuse2t64,
+                  or libfuse2 on older systems) or run it with
+                  --appimage-extract-and-run.
+Folder version:   ./snowballz        (or double-click "snowballz")
+Menu entry:       ./install-desktop-entry.sh   adds Snowballz to your
+                  applications menu
+
+Needs a Linux from 2021 or later (glibc 2.34+: Ubuntu 22.04, Debian 12,
+Fedora 35, Mint 21 or newer).  SDL2 is included (lib/); if your system
+has its own SDL2, that one is used.  Music is built in.
+
+Settings:      ~/.snowballz.ini
+Crash reports: ~/.snowballz_crash.log  (please send it with bug reports)
+Online games: Online > Host a game.  The game opens TCP port 5555 on your
+router by itself (UPnP) and the lobby shows the address to give your
+friends, with a Copy button.  They choose Online > Join a game and paste it
+(Ctrl+V).  If the router can't do it automatically, the lobby says how to
+forward the port by hand.
+If you use a firewall (ufw, firewalld), allow TCP port 5555 when hosting:
+  sudo ufw allow 5555/tcp
+Controls: see README.md.

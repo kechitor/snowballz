@@ -7,7 +7,7 @@ Description
 Snowballz is a fun little game in which you engage your group of penguins in a snowball fight.
 
 
-![image](icon.png)
+![image](wallpaper.png)
 
 
 Play
@@ -101,8 +101,127 @@ decide the mix, from all workers to all snowballers.
 * Online: in the lobby, with the **-** / **+** buttons or the Left / Right
   arrow keys, until the host presses `S`. Every player chooses their own, and only
   sees their own.
-* Your choice is remembered for each map (in the settings file). The AI
-  players keep the map's mix.
+* Your choice is remembered for each map (in the settings file). Each AI
+  player gets a random mix (a quarter to four fifths snowballers).
+
+Start and end of a match
+------------------------
+Every match starts with a 3, 2, 1, Go! countdown: nobody moves until "Go!",
+but you can look around and give orders already.
+
+After the match, the winner / loser screen lists every player's numbers:
+enemy penguins their snowballs froze, their own penguins frozen, snowballs
+thrown and the share that were direct hits, loads of fish and crystal
+brought home, igloos taken, wall tiles built and power-ups picked up, with
+the map and how long the match took. In an online game the host counts and
+everybody sees the same numbers.
+
+Power-ups
+---------
+Every minute as many power-ups as the map has drop at random places (the
+countdown is at the top of the screen). A snowballer picks one up by walking
+over it and keeps it until it is frozen: then the thrower takes it, or it
+drops in the snow.
+
+* **Rapid fire** (red diamond): makes snowballs three times as fast and keeps
+  two in hand when it isn't busy.
+* **Range** (yellow circle): throws from further away, and its snowballs
+  always find their target.
+* **Defense** (blue shield): 4 more warmth, near misses don't hurt, direct
+  hits take 1 warmth instead of 3, and it warms up by itself outside the
+  igloo (1 warmth every 5 seconds).
+
+Alliances
+---------
+Press `P` in a match for the alliances panel: every other player, with an
+**Offer alliance** button. An offer to you pops up at the top of the screen:
+**Accept** (`Y`) or **Reject** (`N`); unanswered, it runs out after a minute.
+
+* Accepting costs both sides 10 fish (from their igloos).
+* Allies' penguins don't throw at each other, an ally's stray snowball
+  doesn't hurt, and allies can't take each other's igloos.
+* Allying with a player who already has allies joins the whole alliance.
+* Allies win together: on conquer maps when the alliance holds every igloo,
+  on crystal maps when the alliance has the amount times its size (60 for
+  two players on a "first to 30" map; the crystal list at the top right
+  shows each alliance as one row).
+* The AI players make and answer offers too (and hold grudges). Every offer,
+  answer and new alliance is announced in the chat.
+
+Snow walls
+----------
+Workers build walls out of snow bricks, one 8-tile **section** at a time.
+Select some workers and press `B`: a section's outline follows the mouse
+(green where it fits, red where it doesn't). `R` or the mouse wheel rotates
+it (east-west, north-south or either diagonal); a click puts it down. Hold
+`Shift` to place several in a row (line them up end to end for a longer
+wall); right click (or `Escape`) stops.
+
+* **Snow brick wall**: free (snow is everywhere). Each 8-tile section takes
+  30 seconds of work, so two workers build it in 15 seconds and three in 10.
+  The bricks go up row by row along the whole section, with one progress
+  bar over its middle.
+* **Ice wall**: select workers, press `U` and click a finished section of
+  your snow wall. Each section costs 1 crystal and takes 15 seconds of work
+  (shared the same way). Crystal counts towards a crystal map's goal, so
+  ice walls are a trade-off there.
+* Penguins find their way round walls: sent to the other side of one, they
+  walk round its end (or through a gap) instead of pacing along it.
+* A finished wall blocks the way for every penguin, yours too (leave a
+  gap, or take a tile of it down: right click it while planning with `B`).
+  Walls can't go on trees, ice pinnacles, fish holes or crystal, or within 2
+  tiles of an igloo door.
+* An enemy snowball aimed at a penguin up to 2 tiles behind the wall hits
+  the wall instead. Each tile of snow bricks takes 8 hits, of ice 20, so
+  walls are breached a tile at a time; damaged tiles look battered, and
+  right-clicking one with workers patches it up for free (2 seconds of work
+  a hit). Your own side's snowballs
+  fly over your walls.
+* Snowballers knock down an enemy wall tile that is in their way, or the one
+  you right-click with them selected (before anything else).
+* Each wall's ends carry a small flag in its owner's colour. The AI players
+  don't build walls, but their snowballers knock them down.
+
+Map editor
+----------
+*Map editor* in the main menu makes new maps or changes existing ones.
+
+* **New map** (80, 120 or 160 tiles square) or **Change a map**.
+* Tools on the left: **Snow** / **Ice** (the ground), **Raise** / **Lower** /
+  **Smooth** (hills; hold the button), **Trees** (on snow), **Pinnacles** (on
+  ice), **Fish**, **Crystal**, **Eraser**, **Igloo** (one per player, at least
+  2), and the **Rapid fire** / **Range** / **Defense** power-ups. The left
+  button paints, the right button removes things; `-` / `+` (or `[` `]`)
+  change the brush. In the game only the number of power-ups counts: that
+  many are dropped at random places, of random kinds, every minute.
+* The mouse wheel zooms, the middle button or the arrow keys / `W` `A` `S` `D`
+  move the view, `Home` shows the whole map, `Ctrl+Z` undoes, `Ctrl+S` saves.
+* Every igloo gets the land nearest to it as its territory (shown tinted).
+* **Map settings**: the name and description, the victory (take every igloo,
+  or be the first to gather a number of loads of crystal / fish) and the
+  penguins each igloo starts with.
+* **Music** (in *Map settings*): `<` / `>` pick the game's usual music or
+  one of its tunes; to give the map its own music, drag an Ogg Vorbis
+  (`.ogg`) file from your file manager onto the editor window. It is saved
+  inside the map (up to 25 MB), so it plays for whoever has the map.
+  **Listen** plays the choice.
+* **Import a map...** (on the editor's first page) brings in a map from your
+  computer: a Snowballz map `.zip` (from a friend, a download, another
+  computer). It opens your computer's file chooser (on Linux this needs
+  `zenity` or `kdialog`); you can also just drag the `.zip` onto the
+  editor's window. The map is checked, then copied into your maps folder
+  under a name of its own (it never replaces a map that is there), and it
+  shows up in the editor and in the game's map list.
+* **X** next to one of your own maps (in *Change a map*) deletes it, after
+  you confirm. The game's own maps can't be deleted; deleting your changed
+  copy of one brings the original back.
+* **Save** puts the map in your own maps folder (`~/.snowballz_maps`; Windows
+  `%APPDATA%\SnowballZ\maps`): it appears in Single Play and when hosting. A
+  changed game map is saved there too, so the original stays as it was.
+* **Test play** saves and starts a single player game on the map; leaving the
+  game (`Escape` -> *Quit game*) returns to the editor.
+* To play a custom map online, every player needs the map file: send it to
+  your friends and they put it in their own maps folder.
 
 Controls
 --------
@@ -112,9 +231,17 @@ Controls
 | left drag | select penguins |
 | right click | send the selected penguins there (workers: gather from a fish hole / crystal; any penguin: enter an igloo) |
 | middle click | same, running |
+| right click the same place twice | same, running: they go there without stopping to fight |
 | click a penguin type in the panel (bottom right) | keep only that type selected; the arrow disbands them |
 | `O` | disband the selected penguins |
-| `Ctrl`+`1`..`9`, then `1`..`9` | make a group / select it |
+| `P` | the alliances panel; `Y` / `N` accept / reject an alliance offer |
+| `B` (workers selected) | place an 8-tile snow wall section: `R` / mouse wheel rotates, click puts it down, `Shift` keeps placing; right click your wall to take it down |
+| `U` (workers selected) | turn your snow wall into ice: click a section (1 crystal each) |
+| right click a wall | workers: build / patch up / finish turning it into ice; snowballers: knock it down |
+| `X` | change the class of the selected penguins (worker ⇄ snowballer): they go into their igloo, warm up, and 10 seconds later come out as the other class; 1 fish each from the igloo |
+| `Ctrl`+`1`..`9` | make the selected penguins a squad (a penguin is in one squad at a time; its number shows on it) |
+| `Shift`+`1`..`9` | add the selected penguins to that squad |
+| `1`..`9`, or click a squad's button (bottom left) | select that squad; press / click twice quickly to look at it |
 | hold `Space` | minimap (click on it to move the view) |
 | mouse wheel / `Page Up` / `Page Down` | zoom (in to 3x, out until the map just fits) |
 | move the mouse to the screen edge / arrow keys / `W` `A` `S` `D` | scroll |

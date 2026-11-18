@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Add the packages to this existing release (like v0.9.8.2); leave empty to just build"
+        description: 
         required: false
         default: ""
 

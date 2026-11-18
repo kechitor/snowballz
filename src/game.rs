@@ -40,6 +40,9 @@ pub struct Hooks {
     /// (server / single player) the local player's igloos go to an AI
     /// after this many milliseconds: a quick defeat for tests
     pub lose_after: Option<u32>,
+    pub chill_after: Option<u32>,
+    pub give_power: Option<String>,
+    pub wall_test_done: bool,
 }
 
 impl Hooks {
@@ -63,6 +66,9 @@ impl Hooks {
             skip_end: std::env::var("SNOWBALLZ_SKIP_END").is_ok(),
             say: std::env::var("SNOWBALLZ_SAY").ok(),
             lose_after: num("SNOWBALLZ_LOSE_AFTER"),
+            chill_after: num("SNOWBALLZ_CHILL_AFTER"),
+            give_power: std::env::var("SNOWBALLZ_GIVE_POWER").ok(),
+            wall_test_done: false,
         }
     }
 }
@@ -88,7 +94,27 @@ pub struct Session {
     pub hosting_online: bool,
     /// the player chose Quit game
     pub quit_requested: bool,
+    /// The start countdown: game time stands still until this (real)
+    /// time, then "Go!" shows until `go_until`.
+    pub countdown_until: Option<u32>,
+    pub go_until: Option<u32>,
 }
+
+/// The countdown before a match (3, 2, 1) ...
+pub const COUNTDOWN_MS: u32 = 3000;
+
+/// A map's own music, written out of the map's zip to a temporary file
+/// (its path), so that it can be played.
+fn unpack_map_music(map: &str) -> Option<String> {
+    let z = crate::zip::Zip::open(&crate::settings::map_path(map)).ok()?;
+    let data = z.read(crate::editmap::MAP_MUSIC_FILE).ok()?;
+    let safe: String = map.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let p = std::env::temp_dir().join(format!("snowballz-music-{}.ogg", safe));
+    std::fs::write(&p, data).ok()?;
+    Some(p.to_string_lossy().into_owned())
+}
+/// ... and how long "Go!" stays.
+pub const GO_MS: u32 = 900;
 
 pub struct Game {
     pub kind: GameType,
@@ -258,6 +284,8 @@ impl Game {
             single: self.kind == GameType::Single,
             hosting_online: self.kind == GameType::Server,
             quit_requested: false,
+            countdown_until: None,
+            go_until: None,
         });
         self.mapname = mapname.to_string();
         self.world = Some(w);
@@ -590,8 +618,15 @@ impl Game {
         {
             let w = self.world.as_mut().unwrap();
             let mut names = Vec::new();
-            if let Some(m) = w.config.get("map", "music") {
-                names.push(m.to_string());
+            match w.config.get("map", "music").map(|m| m.trim()) {
+                // the map's own music: out of the map into a temporary file
+                Some(crate::editmap::MAP_MUSIC_REF) => {
+                    if let Some(p) = unpack_map_music(&w.map_name) {
+                        names.push(p);
+                    }
+                }
+                Some(m) if !m.is_empty() => names.push(m.to_string()),
+                _ => {}
             }
             names.push("snowballz2.ogg".into());
             names.push("main_menu.ogg".into());
@@ -607,8 +642,19 @@ impl Game {
             apply_loadouts(self.world.as_mut().unwrap());
             add_map_players(self.world.as_mut().unwrap());
         }
-        self.world.as_mut().unwrap().started = true;
+        {
+            let w = self.world.as_mut().unwrap();
+            w.started = true;
+            w.started_at = clock::now();
+        }
         look_at_starting_igloo(self.world.as_mut().unwrap());
+        // 3, 2, 1, go! (game time stands still meanwhile: the view can
+        // move and orders can be given, nobody moves yet)
+        if std::env::var("SNOWBALLZ_NO_COUNTDOWN").is_err() {
+            let s = self.session.as_mut().unwrap();
+            s.countdown_until = Some(sdl::ticks().wrapping_add(COUNTDOWN_MS));
+            clock::set_paused(true);
+        }
         if self.kind == GameType::Server {
             self.world.as_mut().unwrap().send(Msg::GameStart);
             // a reminder of the address, for friends who are late
@@ -683,6 +729,22 @@ impl Game {
     }
 
     fn frame(&mut self, fps_cap: u32) {
+        // the start countdown
+        if let Some(s) = self.session.as_mut() {
+            if let Some(t) = s.countdown_until {
+                let now = sdl::ticks();
+                if (now.wrapping_sub(t) as i32) >= 0 {
+                    s.countdown_until = None;
+                    s.go_until = Some(now.wrapping_add(GO_MS));
+                    if s.game_menu.is_none() {
+                        clock::set_paused(false);
+                    }
+                } else if !clock::is_paused() {
+                    // (the Escape menu was closed meanwhile)
+                    clock::set_paused(true);
+                }
+            }
+        }
         let mut dt = self.clock.tick(fps_cap).min(144);
         // a paused single player game stands still
         if clock::is_paused() {
@@ -731,6 +793,51 @@ impl Game {
                 }
             }
         }
+        if elapsed > 4000 && std::env::var("SNOWBALLZ_WALL_TEST").is_ok() && !self.hooks.wall_test_done {
+            // test hook: (hosting) crystal for me, finished walls around
+            // the other igloos, and my snowballers sent at the nearest one;
+            // (a player) my workers sent to build a wall by my igloo
+            self.hooks.wall_test_done = true;
+            let server = self.is_server();
+            if let Some(w) = self.world.as_mut() {
+                if server {
+                    crate::wall::test_setup(w);
+                } else {
+                    crate::wall::test_request(w);
+                }
+            }
+        }
+        if std::env::var("SNOWBALLZ_PATH_TEST").is_ok() && self.is_server() {
+            // test hook: a wall (a cup, open the far side) between my
+            // penguins and a spot they are sent to; how many get there
+            if let Some(w) = self.world.as_mut() {
+                crate::path::test_hook(w, elapsed);
+            }
+        }
+        if self.hooks.give_power.is_some() && elapsed > 2000 && self.is_server() {
+            // test hook: power-ups for my snowballers
+            let kind = self.hooks.give_power.take().unwrap();
+            if let Some(w) = self.world.as_mut() {
+                let me = w.me;
+                crate::plugins::test_give(w, &kind, me);
+            }
+        }
+        if let Some(t) = self.hooks.chill_after {
+            // test hook: chill every penguin of mine (half frozen, half cold)
+            if elapsed > t && self.is_server() {
+                self.hooks.chill_after = None;
+                if let Some(w) = self.world.as_mut() {
+                    let mine: Vec<usize> = (0..w.units.len())
+                        .filter(|&u| w.igloo_player(u) == w.me && !matches!(w.units[u].state, State::InBuilding | State::Entering))
+                        .collect();
+                    for (i, u) in mine.into_iter().enumerate() {
+                        // (SNOWBALLZ_CHILL_TO=n: everybody to n instead)
+                        let to = std::env::var("SNOWBALLZ_CHILL_TO").ok().and_then(|v| v.parse().ok());
+                        w.set_warmth(u, to.unwrap_or(if i % 2 == 0 { 0 } else { 3 }));
+                    }
+                }
+            }
+        }
         if let Some(t) = self.hooks.lose_after {
             if elapsed > t && self.is_server() {
                 self.hooks.lose_after = None;
@@ -758,6 +865,9 @@ impl Game {
         let w = self.world.as_mut().unwrap();
         let s = self.session.as_mut().unwrap();
         let now = clock::now();
+        crate::plugins::tick(w);
+        crate::alliance::tick(w);
+        crate::wall::tick(w);
         if now > s.last_ai_tick.wrapping_add(3000) {
             s.last_ai_tick = now;
             let ids: Vec<Pid> = w.players.values().filter(|p| p.kind == PlayerKind::Ai).map(|p| p.id).collect();
@@ -803,13 +913,19 @@ impl Game {
         sdl::show_cursor(true);
         let _ = gfx::events();
         let mut alpha = 0.0f32;
+        let shown = sdl::ticks();
+        // (screenshot hook: SNOWBALLZ_END_SHOT=path)
+        let mut shot = std::env::var("SNOWBALLZ_END_SHOT").ok();
         loop {
             self.clock.tick(35);
+            // (a moment before a key or click counts, so the last order of
+            // the match doesn't skip the screen)
+            let ready = sdl::ticks().wrapping_sub(shown) > 1200;
             let mut done = false;
             for e in gfx::events() {
                 match e.kind() {
                     sdl::QUIT => crate::quit(0),
-                    sdl::KEYUP | sdl::MOUSEBUTTONUP => done = true,
+                    sdl::KEYUP | sdl::MOUSEBUTTONUP if ready => done = true,
                     _ => {}
                 }
             }
@@ -819,6 +935,15 @@ impl Game {
             alpha = (alpha + 0.05).min(1.0);
             gfx::clear((0, 0, 0));
             backgrounds::draw(name, alpha);
+            let w = self.world.as_ref().unwrap();
+            crate::stats::draw_screen(w, won, ((alpha - 0.3) / 0.7).max(0.0));
+            if ready && alpha >= 1.0 {
+                if let Some(p) = shot.take() {
+                    crate::gfx::set_present_hook(Some(p));
+                    gfx::present();
+                    crate::quit(0);
+                }
+            }
             gfx::present();
         }
     }
@@ -953,8 +1078,26 @@ fn stats_line(w: &World) -> String {
     }
     let frozen = w.units.iter().filter(|u| u.state == State::Frozen).count();
     let inside = w.units.iter().filter(|u| u.state == State::InBuilding).count();
+    let cold = w.units.iter().filter(|u| u.warmth > 0 && u.warmth < 5 && !matches!(u.state, State::InBuilding | State::Entering)).count();
     let me = w.me.map(|m| m.to_string()).unwrap_or("-".into());
-    format!("me={} frozen={} inside={} snowballs={} | {}", me, frozen, inside, w.snowballs.len(), parts.join(" "))
+    // my snowballers out on the snow: "power:snowballs in hand" counts
+    let mut held: std::collections::BTreeMap<String, usize> = Default::default();
+    for u in 0..w.units.len() {
+        if w.igloo_player(u) == w.me && w.units[u].kind == UnitKind::Snowballer && !matches!(w.units[u].state, State::InBuilding | State::Entering | State::Frozen) {
+            let p = match crate::plugins::power_of(w, u) {
+                Some(k) => format!("{:?}", k),
+                None => "none".into(),
+            };
+            *held.entry(format!("{}:{}", p, w.units[u].snowballs)).or_default() += 1;
+        }
+    }
+    let held: Vec<String> = held.iter().map(|(k, v)| format!("{}x{}", k, v)).collect();
+    let dmos = w.dmos.iter().filter(|d| !d.hidden).count();
+    let mine: Vec<usize> = (0..w.units.len()).filter(|&u| w.igloo_player(u) == w.me).collect();
+    let my_workers = mine.iter().filter(|&&u| w.units[u].kind == UnitKind::Worker).count();
+    let my_pending = mine.iter().filter(|&&u| w.units[u].switch_pending).count();
+    let my_fish: i32 = (0..w.buildings.len()).filter(|&b| w.buildings[b].player == w.me).map(|b| w.num_storage(b, crate::world::ResKind::Fish)).sum();
+    format!("mine: workers={} snowballers={} pending={} fish={} || me={} frozen={} inside={} cold={} snowballs={} held=[{}] dmos_shown={} | {} | powerups {}", my_workers, mine.len() - my_workers, my_pending, my_fish, me, frozen, inside, cold, w.snowballs.len(), held.join(" "), dmos, parts.join(" "), crate::plugins::summary(w))
 }
 
 fn new_player_id(w: &World) -> Pid {
@@ -1020,6 +1163,19 @@ pub fn add_map_players(w: &mut World) {
         w.players.insert(id, Player::new(id, &name, PlayerKind::Ai, color));
         w.send(Msg::NewPlayer { player_id: id, name, color, loading: false });
         w.set_region_player(ri, Some(id));
+        // each AI its own mix of snowballers and workers (from a quarter
+        // to four fifths snowballers), told to everybody like a player's
+        if let Some(b) = w.regions[ri].igloo {
+            let total = w.buildings[b].start_units.len() as i32;
+            if total > 0 {
+                let lo = (total as f64 * 0.25).round() as i32;
+                let hi = ((total as f64 * 0.8).round() as i32).max(lo);
+                let n = w.rng.randint(lo, hi) as u16;
+                w.apply_loadout(b, n);
+                w.send(Msg::Loadout { building_id: b as u16, snowballers: n });
+                ai::setup(w, id);
+            }
+        }
     }
 }
 
@@ -1106,6 +1262,11 @@ fn server_message(w: &mut World, m: Msg, c: ConnId) {
             for dm in dmos {
                 w.send_to(dm, &[c], &[]);
             }
+            if let Some(ms) = crate::plugins::next_drop_in(w) {
+                crate::plugins::announce(w, ms, false, Some(c));
+            }
+            crate::alliance::send_state_to(w, c);
+            crate::wall::send_state_to(w, c);
             // joining a match that already runs: straight into the game
             // (the Python version left such players waiting in the lobby)
             if w.started {
@@ -1143,6 +1304,10 @@ fn server_message(w: &mut World, m: Msg, c: ConnId) {
             }
         }
         Msg::ChatMessage { msg, from_id, to_id } => {
+            let sender = w.players.iter().find(|(_, p)| p.connection == Some(c)).map(|(&id, _)| id);
+            if crate::plugins::hidden_request(w, &msg, from_id, sender) {
+                return;
+            }
             let Some(from) = w.players.get(&from_id) else { return };
             if from.connection == Some(c) {
                 let to = if to_id == 0xffff { None } else { Some(to_id) };
@@ -1175,6 +1340,9 @@ fn client_message(w: &mut World, m: Msg) {
             }
         }
         Msg::ChatMessage { msg, from_id, to_id } => {
+            if crate::plugins::timer_message(w, &msg, from_id) {
+                return;
+            }
             if w.players.contains_key(&from_id) {
                 let to = if to_id == 0xffff { None } else { Some(to_id).filter(|t| w.players.contains_key(t)) };
                 w.display_chat(&msg, from_id, to);

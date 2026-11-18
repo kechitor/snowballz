@@ -87,7 +87,8 @@ pub fn play(names: &[String], loops: i32) -> bool {
     }
     for name in names {
         // the Python version had MP3 music; it is OGG now
-        let mut path = format!("data/music/{}", name);
+        // (a whole path: a map's own music, unpacked)
+        let mut path = if std::path::Path::new(name).is_absolute() { name.clone() } else { format!("data/music/{}", name) };
         if !std::path::Path::new(&path).exists() {
             if let Some(stem) = path.strip_suffix(".mp3") {
                 path = format!("{}.ogg", stem);

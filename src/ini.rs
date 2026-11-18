@@ -81,6 +81,17 @@ impl Ini {
         }
     }
 
+    pub fn remove_section(&mut self, s: &str) {
+        self.sections.retain(|(n, _)| n != s);
+    }
+
+    pub fn remove(&mut self, s: &str, k: &str) {
+        let k = k.to_lowercase();
+        if let Some((_, items)) = self.sections.iter_mut().find(|(n, _)| n == s) {
+            items.retain(|(kk, _)| *kk != k);
+        }
+    }
+
     pub fn get(&self, s: &str, k: &str) -> Option<&str> {
         let k = k.to_lowercase();
         self.sections

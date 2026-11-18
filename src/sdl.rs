@@ -237,6 +237,20 @@ impl Event {
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..end]).into_owned()
     }
+    /// The file dropped on the window (DROPFILE).  Call once per event: it
+    /// frees SDL's copy of the name.
+    pub fn take_drop_file(&self) -> Option<String> {
+        let p = usize::from_ne_bytes(self.data[8..8 + std::mem::size_of::<usize>()].try_into().ok()?) as *mut c_char;
+        if p.is_null() {
+            return None;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        if let Some(free) = api().SDL_free {
+            unsafe { free(p as *mut c_void) };
+        }
+        Some(s)
+    }
+
     pub fn window_event(&self) -> u8 {
         self.data[12]
     }
@@ -248,6 +262,8 @@ pub const INIT_VIDEO: u32 = 0x20;
 pub const INIT_EVENTS: u32 = 0x4000;
 
 pub const QUIT: u32 = 0x100;
+/// a file dropped on the window
+pub const DROPFILE: u32 = 0x1000;
 pub const WINDOWEVENT: u32 = 0x200;
 pub const KEYDOWN: u32 = 0x300;
 pub const KEYUP: u32 = 0x301;
@@ -291,11 +307,17 @@ pub const K_0: i32 = 48;
 pub const K_1: i32 = 49;
 pub const K_9: i32 = 57;
 pub const K_A: i32 = 97;
+pub const K_B: i32 = 98;
 pub const K_C: i32 = 99;
+pub const K_U: i32 = 117;
 pub const K_O: i32 = 111;
 pub const K_S: i32 = 115;
 pub const K_V: i32 = 118;
 pub const K_X: i32 = 120;
+pub const K_N: i32 = 110;
+pub const K_P: i32 = 112;
+pub const K_R: i32 = 114;
+pub const K_Y: i32 = 121;
 pub const K_INSERT: i32 = SC | 73;
 pub const K_F3: i32 = SC | 60;
 pub const K_F11: i32 = SC | 68;

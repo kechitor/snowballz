@@ -27,6 +27,30 @@ pub fn config_path() -> String {
     "snowballz.ini".to_string()
 }
 
+/// The folder for maps made with the map editor (the game's own maps/
+/// folder may be read-only, inside an app or an AppImage).
+pub fn user_maps_dir() -> String {
+    if let Ok(p) = std::env::var("SNOWBALLZ_MAPS") {
+        return p;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return format!("{}/.snowballz_maps", home);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return format!("{}\\SnowballZ\\maps", appdata);
+    }
+    "usermaps".to_string()
+}
+
+/// The file of map `name`: the user's own maps first, then the game's.
+pub fn map_path(name: &str) -> String {
+    let own = std::path::Path::new(&user_maps_dir()).join(format!("{}.zip", name));
+    if own.exists() {
+        return own.to_string_lossy().into_owned();
+    }
+    format!("maps/{}.zip", name)
+}
+
 pub fn load() {
     let path = config_path();
     match std::fs::read_to_string(&path) {

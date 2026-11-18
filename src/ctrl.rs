@@ -10,6 +10,7 @@ use crate::net::Msg;
 use crate::sdl;
 use crate::settings;
 use crate::unit;
+use crate::wall::{self, WallMode};
 use crate::world::*;
 
 pub const MIN_ZOOM: f64 = 0.1;
@@ -87,13 +88,32 @@ fn end_select(w: &mut World) {
     w.select_box_end = None;
 }
 
-/// Send the selected penguins somewhere (right click; middle click runs).
+/// How close a second order must be to the first to count as "again".
+const ORDER_AGAIN_TILES: i32 = 2;
+
+/// Send the selected penguins somewhere (right click; middle click, or the
+/// same order twice, runs).
 fn set_job(w: &mut World, pos: (f64, f64), run_mode: bool) {
     if w.selected.is_empty() {
         return;
     }
     let (x, y) = pos;
-    let tile = w.canvas_to_map(x, y);
+    let mut tile = w.canvas_to_map(x, y);
+    // (clicked on a wall section standing up from the tile below)
+    if wall::at(w, tile.0, tile.1).is_none() {
+        if let Some(wi) = wall::pick(w, tile) {
+            tile = (w.walls[wi].x, w.walls[wi].y);
+        }
+    }
+    // the same penguins sent to the same place again: they go there
+    // without stopping to fight (like a middle click)
+    let mut run_mode = run_mode;
+    if let Some((last, who)) = &w.last_order {
+        if *who == w.selected && (last.0 - tile.0).abs() <= ORDER_AGAIN_TILES && (last.1 - tile.1).abs() <= ORDER_AGAIN_TILES {
+            run_mode = true;
+        }
+    }
+    w.last_order = Some((tile, w.selected.clone()));
     let sel: Vec<usize> = w.selected.iter().copied().collect();
     if w.is_server() {
         for &u in &sel {
@@ -102,6 +122,12 @@ fn set_job(w: &mut World, pos: (f64, f64), run_mode: bool) {
     } else {
         let ids = sel.iter().map(|&u| u as u16).collect();
         w.send(Msg::SetJob { pos: (tile.0 as u16, tile.1 as u16), run_mode, unit_ids: ids });
+        // (the host calls their class change off)
+        for &u in &sel {
+            if !matches!(w.units[u].state, State::InBuilding | State::Entering) {
+                w.units[u].switch_pending = false;
+            }
+        }
     }
     let worker = sel.iter().any(|&u| w.units[u].kind == UnitKind::Worker);
     let mx = x + w.view.x - 16.0;
@@ -118,6 +144,190 @@ fn set_job(w: &mut World, pos: (f64, f64), run_mode: bool) {
         w.imprints.moves.add_rgb(mx, my, color, now);
     }
 }
+
+/// The oldest alliance offer to me.
+fn hud_offer(w: &World) -> Option<Pid> {
+    let me = w.me?;
+    w.offers.iter().filter(|o| o.1 == me).min_by_key(|o| o.2).map(|o| o.0)
+}
+
+fn ally_action(w: &mut World, a: hud::AllyAction) {
+    match a {
+        hud::AllyAction::Offer(p) => crate::alliance::request_offer(w, p),
+        hud::AllyAction::Accept(p) => crate::alliance::request_answer(w, p, true),
+        hud::AllyAction::Reject(p) => crate::alliance::request_answer(w, p, false),
+        hud::AllyAction::Nothing => {}
+    }
+}
+
+/// A client stops showing a class change the host never made after this.
+const CLIENT_SWITCH_WAIT_MS: u32 = 120_000;
+
+/// The selected penguins go home and change class (X): workers become
+/// snowballers and the other way round, 1 fish each.
+pub fn switch_class(w: &mut World) {
+    let sel: Vec<usize> = w.selected.iter().copied().filter(|&u| !w.units[u].switch_pending).collect();
+    if sel.is_empty() {
+        return;
+    }
+    // (counted here so a client can say it too; the host decides)
+    let mut fish: std::collections::HashMap<usize, i32> = Default::default();
+    let (mut sent, mut poor) = (Vec::new(), 0);
+    for &u in &sel {
+        let ig = w.units[u].igloo;
+        let promised = w.buildings[ig].units.iter().filter(|&&o| w.units[o].switch_pending).count() as i32 * unit::SWITCH_FISH;
+        let left = fish.entry(ig).or_insert(w.num_storage(ig, ResKind::Fish) - promised);
+        if *left >= unit::SWITCH_FISH {
+            *left -= unit::SWITCH_FISH;
+            sent.push(u);
+        } else {
+            poor += 1;
+        }
+    }
+    let workers = sent.iter().filter(|&&u| w.units[u].kind == UnitKind::Worker).count();
+    let snowballers = sent.len() - workers;
+    if w.is_server() {
+        let me = w.me;
+        unit::order_switch(w, me, &sent);
+    } else if !sent.is_empty() {
+        crate::plugins::request_switch(w, &sent);
+        let now = w.now();
+        for &u in &sent {
+            // (shown until the host says it changed, or gives up)
+            w.units[u].switch_pending = true;
+            w.units[u].switch_done_at = Some(now.wrapping_add(CLIENT_SWITCH_WAIT_MS));
+        }
+    }
+    let mut parts = Vec::new();
+    if snowballers > 0 {
+        parts.push(format!("{} snowballer{} to become worker{}", snowballers, if snowballers == 1 { "" } else { "s" }, if snowballers == 1 { "" } else { "s" }));
+    }
+    if workers > 0 {
+        parts.push(format!("{} worker{} to become snowballer{}", workers, if workers == 1 { "" } else { "s" }, if workers == 1 { "" } else { "s" }));
+    }
+    if !parts.is_empty() {
+        let n = sent.len() as i32 * unit::SWITCH_FISH;
+        w.notice(&format!("Sent home {} ({} fish)", parts.join(" and "), n));
+    }
+    if poor > 0 {
+        w.notice(&format!("Not enough fish in the igloo for {} more", poor));
+    }
+}
+
+fn selected_workers(w: &World) -> Vec<usize> {
+    w.selected.iter().copied().filter(|&u| w.units[u].kind == UnitKind::Worker).collect()
+}
+
+/// B / U: plan a snow wall, or pick sections to turn into ice (with
+/// workers selected).
+pub fn wall_mode(w: &mut World, mode: WallMode) {
+    if selected_workers(w).is_empty() {
+        w.notice("Select some workers first: they build the walls");
+        return;
+    }
+    w.wall_mode = if w.wall_mode == Some(mode) { None } else { Some(mode) };
+}
+
+/// A click while planning walls: put the wall piece down (B), or turn the
+/// section under the mouse into ice (U).
+fn wall_click(w: &mut World, tile: (i32, i32)) {
+    let Some(mode) = w.wall_mode else { return };
+    let workers = selected_workers(w);
+    if workers.is_empty() {
+        w.wall_mode = None;
+        return;
+    }
+    match mode {
+        WallMode::Build => {
+            let tiles = wall::piece_tiles(tile, w.wall_rot);
+            if !tiles.iter().all(|&(x, y)| wall::can_place(w, x, y)) {
+                w.notice("The wall doesn't fit there (it can't go on trees, ice pinnacles, fish holes, crystal, other walls or by an igloo door): move or rotate it (R)");
+                return;
+            }
+            let (a, b) = (tiles[0], tiles[tiles.len() - 1]);
+            wall::request_plan(w, a, b, &workers);
+            w.notice(&format!("Snow wall section planned ({} worker{} on it)", workers.len(), if workers.len() == 1 { "" } else { "s" }));
+        }
+        WallMode::Ice => {
+            let me = w.me;
+            let walls = wall::upgradable(w, me, &[tile]);
+            if walls.is_empty() {
+                w.notice("Click a finished section of your snow wall to turn it into ice");
+                return;
+            }
+            let have = me.map(|p| wall::crystal_of(w, p)).unwrap_or(0);
+            if have < wall::ICE_CRYSTAL {
+                w.notice(&format!("Not enough crystal: ice costs {} a section", wall::ICE_CRYSTAL));
+                return;
+            }
+            wall::request_ice(w, &walls, &workers);
+            w.notice(&format!("Turning a section into ice ({} crystal)", wall::ICE_CRYSTAL));
+        }
+    }
+    // (Shift keeps planning)
+    if sdl::mod_state() & sdl::KMOD_SHIFT == 0 {
+        w.wall_mode = None;
+    }
+}
+
+/// Turn the wall piece being placed (R, or the mouse wheel).
+fn rotate_wall(w: &mut World, by: i32) {
+    let n = wall::ROTATIONS.len() as i32;
+    w.wall_rot = (w.wall_rot as i32 + by).rem_euclid(n) as usize;
+}
+
+/// Make the selected penguins squad `n` (Ctrl+n), or add them to it
+/// (Shift+n).  A penguin is in one squad at a time.
+pub fn make_squad(w: &mut World, n: usize, add: bool) {
+    if !add {
+        for u in std::mem::take(&mut w.groups[n]) {
+            w.units[u].group = None;
+        }
+    }
+    let sel: Vec<usize> = w.selected.iter().copied().collect();
+    for &u in &sel {
+        if let Some(g) = w.units[u].group {
+            w.groups[g as usize].remove(&u);
+        }
+        w.units[u].group = Some(n as u8);
+        w.groups[n].insert(u);
+    }
+    let c = w.groups[n].len();
+    w.notice(&format!("Squad {}: {} penguin{}", n, c, if c == 1 { "" } else { "s" }));
+}
+
+/// The members of squad `n` that are still mine.
+pub fn squad_members(w: &World, n: usize) -> Vec<usize> {
+    w.groups[n].iter().copied().filter(|&u| w.igloo_player(u) == w.me).collect()
+}
+
+/// Select squad `n` (key n or its button); a second tap soon after moves
+/// the view to it.
+pub fn tap_squad(w: &mut World, n: usize) {
+    let members = squad_members(w, n);
+    if members.is_empty() {
+        return;
+    }
+    let now = w.now();
+    let again = w.last_squad_tap.is_some_and(|(m, t)| m == n && now.wrapping_sub(t) < SQUAD_DOUBLE_TAP_MS);
+    w.last_squad_tap = Some((n, now));
+    for &u in &w.selected {
+        w.units[u].selected = false;
+    }
+    w.selected = members.iter().copied().collect();
+    for &u in &members {
+        w.units[u].selected = true;
+    }
+    if again {
+        // the middle of the squad (penguins inside an igloo count from there)
+        let (sx, sy) = members.iter().fold((0.0, 0.0), |a, &u| (a.0 + (w.units[u].x * 32) as f64, a.1 + (w.units[u].y * 32) as f64));
+        let k = members.len() as f64;
+        look_at(w, sx / k, sy / k);
+    }
+}
+
+/// Two taps on a squad within this long: look at it.
+const SQUAD_DOUBLE_TAP_MS: u32 = 400;
 
 pub fn disban_units(w: &mut World) {
     let sel: Vec<usize> = w.selected.iter().copied().collect();
@@ -374,6 +584,13 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
         }
         match e.kind() {
             sdl::QUIT => crate::quit(0),
+            sdl::MOUSEWHEEL if w.wall_mode == Some(WallMode::Build) => {
+                // (placing a wall: the wheel turns it)
+                let y = e.wheel_y();
+                if y != 0 {
+                    rotate_wall(w, if y > 0 { 1 } else { -1 });
+                }
+            }
             sdl::MOUSEWHEEL => {
                 if !w.chat.chatting {
                     let z = w.view.zoom;
@@ -394,6 +611,10 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                     continue;
                 }
                 match key {
+                    sdl::K_ESCAPE if w.wall_mode.is_some() => {
+                        w.wall_mode = None;
+                    }
+                    sdl::K_R if w.wall_mode == Some(WallMode::Build) => rotate_wall(w, 1),
                     sdl::K_ESCAPE => {
                         let title = if w.spectating {
                             "You were defeated"
@@ -418,39 +639,28 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                     sdl::K_HOME => look_at_home(w),
                     sdl::K_SPACE => w.draw_minimap = true,
                     sdl::K_O => disban_units(w),
+                    sdl::K_X if !w.selected.is_empty() => switch_class(w),
+                    sdl::K_B => wall_mode(w, WallMode::Build),
+                    sdl::K_U => wall_mode(w, WallMode::Ice),
+                    sdl::K_P => w.diplomacy_open = !w.diplomacy_open,
+                    sdl::K_Y | sdl::K_N if hud_offer(w).is_some() => {
+                        let from = hud_offer(w).unwrap();
+                        crate::alliance::request_answer(w, from, key == sdl::K_Y);
+                    }
                     k => {
                         chat_keys(w, k);
                     }
                 }
-                // groups
+                // squads
                 if (sdl::K_1..=sdl::K_9).contains(&key) {
                     let n = (key - sdl::K_0) as usize;
-                    if !w.selected.is_empty() && e.key_mod() & sdl::KMOD_CTRL != 0 {
-                        for u in std::mem::take(&mut w.groups[n]) {
-                            w.units[u].group = None;
-                        }
-                        let sel: Vec<usize> = w.selected.iter().copied().collect();
-                        for &u in &sel {
-                            if let Some(g) = w.units[u].group {
-                                w.groups[g as usize].remove(&u);
-                            }
-                            w.units[u].group = Some(n as u8);
-                        }
-                        w.groups[n] = sel.into_iter().collect();
-                    } else if !w.groups[n].is_empty() {
-                        for &u in &w.selected {
-                            w.units[u].selected = false;
-                        }
-                        w.selected = w.groups[n].clone();
-                        let mut last = None;
-                        for &u in &w.selected {
-                            w.units[u].selected = true;
-                            last = Some(u);
-                        }
-                        if let Some(u) = last {
-                            let (x, y) = ((w.units[u].x * 32) as f64, (w.units[u].y * 32) as f64);
-                            look_at(w, x, y);
-                        }
+                    let m = e.key_mod();
+                    if !w.selected.is_empty() && m & sdl::KMOD_CTRL != 0 {
+                        make_squad(w, n, false);
+                    } else if !w.selected.is_empty() && m & sdl::KMOD_SHIFT != 0 {
+                        make_squad(w, n, true);
+                    } else {
+                        tap_squad(w, n);
                     }
                 }
             }
@@ -462,11 +672,39 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
             }
             sdl::MOUSEBUTTONDOWN => {
                 let pos = gfx::mouse_pos();
-                if !hud::in_panel(w, pos) {
+                let squad = if e.button() == 1 && !w.draw_minimap { hud::squad_at(w, pos) } else { None };
+                let ally = if !w.draw_minimap { hud::ally_click(w, pos) } else { None };
+                if let Some(a) = ally {
+                    if e.button() == 1 {
+                        ally_action(w, a);
+                    }
+                } else if let Some(n) = squad {
+                    tap_squad(w, n);
+                } else if !hud::in_panel(w, pos) {
                     let p = scaled_mouse(w);
-                    if !w.draw_minimap {
+                    if !w.draw_minimap && w.wall_mode.is_some() {
+                        // planning a wall: click to put the piece down (or to
+                        // turn a section into ice); right click: take down one
+                        // of my sections (in build mode), or stop
+                        let tile = w.canvas_to_map(p.0, p.1);
+                        let mine = wall::pick(w, tile).filter(|&wi| w.walls[wi].owner == w.me && w.me.is_some());
+                        match (e.button(), mine) {
+                            (1, _) => wall_click(w, tile),
+                            (3, Some(wi)) if w.wall_mode == Some(WallMode::Build) => {
+                                wall::request_take_down(w, wi);
+                                w.notice("Wall section taken down");
+                            }
+                            _ => {
+                                w.wall_mode = None;
+                            }
+                        }
+                    } else if !w.draw_minimap {
                         match e.button() {
-                            1 => w.select_box_start = Some((w.view.x + p.0, w.view.y + p.1)),
+                            1 => {
+                                // clicking a frozen penguin keeps its thaw countdown shown
+                                w.inspected = crate::display::frozen_under_mouse(w);
+                                w.select_box_start = Some((w.view.x + p.0, w.view.y + p.1));
+                            }
                             2 => set_job(w, p, true),
                             3 => set_job(w, p, false),
                             _ => {}
@@ -495,6 +733,10 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
     }
     if s.game_menu.is_some() {
         return true; // no scrolling behind the menu
+    }
+    // (planning walls needs workers)
+    if w.wall_mode.is_some() && selected_workers(w).is_empty() {
+        w.wall_mode = None;
     }
     chat_backspace_repeat(w);
 

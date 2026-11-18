@@ -27,6 +27,10 @@ pub enum GameType {
 }
 
 pub struct Menu {
+    /// the map editor (kept while a map is test-played)
+    editor: crate::editor::Editor,
+    /// go back into the editor when the menu opens again
+    resume_editor: bool,
     pages: Vec<Page>,
     current: usize,
     maps: Vec<MapInfo>,
@@ -46,19 +50,29 @@ pub struct Menu {
 
 /// The maps in maps/*.zip, sorted by file name.
 pub fn list_maps() -> Vec<MapInfo> {
-    let mut files: Vec<String> = std::fs::read_dir("maps")
-        .map(|d| {
-            d.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.ends_with(".zip"))
-                .collect()
-        })
-        .unwrap_or_default();
+    // the game's maps and the user's own (map editor) maps; an own map
+    // with the same file name replaces the game's
+    let zips = |dir: &str| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.ends_with(".zip"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut files: Vec<String> = zips("maps");
+    for f in zips(&settings::user_maps_dir()) {
+        if !files.contains(&f) {
+            files.push(f);
+        }
+    }
     files.sort();
     let mut out = Vec::new();
     for f in files {
-        let filename = f.split('.').next().unwrap_or("").to_string();
-        let z = match Zip::open(&format!("maps/{}", f)) {
+        let filename = f.trim_end_matches(".zip").to_string();
+        let z = match Zip::open(&settings::map_path(&filename)) {
             Ok(z) => z,
             Err(e) => {
                 eprintln!("Skipping map {}: {}", f, e);
@@ -235,6 +249,7 @@ impl Menu {
             vec![
                 Button::new("Single Play", Action::Page(1)),
                 Button::new("Online", Action::Page(3)),
+                Button::new("Map editor", Action::MapEditor),
                 Button::new("Settings", Action::Page(2)),
                 Button::new("Quit", Action::Exit),
             ],
@@ -338,6 +353,8 @@ impl Menu {
         let (sw, sh) = gfx::screen_size();
         let (scale, off_x, off_y) = backgrounds::design_view(sw, sh);
         let mut menu = Menu {
+            editor: crate::editor::Editor::new(),
+            resume_editor: false,
             pages,
             current: 0,
             maps,
@@ -475,6 +492,23 @@ impl Menu {
                 }
             }
             Action::Resume => {}
+            Action::MapEditor => self.open_editor(),
+        }
+    }
+
+    /// Run the map editor; a map to test becomes a single player game.
+    fn open_editor(&mut self) {
+        match self.editor.run() {
+            crate::editor::Exit::Back => {
+                // the map lists may have changed: build the menu again
+                let editor = std::mem::take(&mut self.editor);
+                *self = Menu::new();
+                self.editor = editor;
+            }
+            crate::editor::Exit::Test(file) => {
+                self.resume_editor = true;
+                self.result = Some((file, GameType::Single));
+            }
         }
     }
 
@@ -496,6 +530,13 @@ impl Menu {
     /// Run the menu until a game is chosen: (map, game type).
     pub fn run(&mut self) -> (String, GameType) {
         self.result = None;
+        if self.resume_editor {
+            self.resume_editor = false;
+            self.open_editor();
+            if let Some(r) = self.result.clone() {
+                return r;
+            }
+        }
         let mut clock = crate::clock::Clock::new();
         sdl::show_cursor(true);
         while self.result.is_none() {

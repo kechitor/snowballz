@@ -119,6 +119,8 @@ pub enum Action {
     NameChanged(String),
     /// the in-game menu: back to the game
     Resume,
+    /// the main menu: open the map editor
+    MapEditor,
 }
 
 pub struct Label {
@@ -644,27 +646,32 @@ impl Panel {
     }
 
     fn draw(&self, v: &View) {
-        let bg = theme("bg.png");
-        let r = v.to_screen(&self.rect);
-        let tw = ((bg.w as f64 * v.scale).round() as i32).max(1);
-        let th = ((bg.h as f64 * v.scale).round() as i32).max(1);
-        gfx::set_clip(Some(r));
-        let mut yy = r.y;
-        while yy < r.y + r.h {
-            let mut xx = r.x;
-            while xx < r.x + r.w {
-                gfx::blit(&bg, None, Rect::new(xx, yy, tw, th), 1.0);
-                xx += tw;
-            }
-            yy += th;
-        }
-        gfx::set_clip(None);
+        panel_bg(v, v.to_screen(&self.rect));
         for row in &self.rows {
             for e in row {
                 e.draw(v);
             }
         }
     }
+}
+
+/// The panels' background (the theme's bg.png tiled over a screen
+/// rectangle).
+pub fn panel_bg(v: &View, r: Rect) {
+    let bg = theme("bg.png");
+    let tw = ((bg.w as f64 * v.scale).round() as i32).max(1);
+    let th = ((bg.h as f64 * v.scale).round() as i32).max(1);
+    gfx::set_clip(Some(r));
+    let mut yy = r.y;
+    while yy < r.y + r.h {
+        let mut xx = r.x;
+        while xx < r.x + r.w {
+            gfx::blit(&bg, None, Rect::new(xx, yy, tw, th), 1.0);
+            xx += tw;
+        }
+        yy += th;
+    }
+    gfx::set_clip(None);
 }
 
 /// A list of widgets drawn and updated together.

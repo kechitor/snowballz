@@ -97,3 +97,71 @@ mod tests {
         }
     }
 }
+
+/// A zip archive of `files` (name, data), stored without compression (the
+/// map editor writes maps this way; PNG data is already compressed).
+pub fn write_stored(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    let le16 = |v: &mut Vec<u8>, n: usize| v.extend_from_slice(&(n as u16).to_le_bytes());
+    let le32 = |v: &mut Vec<u8>, n: usize| v.extend_from_slice(&(n as u32).to_le_bytes());
+    for (name, data) in files {
+        let crc = inflate::crc32(data) as usize;
+        let offset = out.len();
+        // local header
+        le32(&mut out, 0x04034b50);
+        le16(&mut out, 20); // version needed
+        le16(&mut out, 0); // flags
+        le16(&mut out, 0); // stored
+        le16(&mut out, 0); // time
+        le16(&mut out, 0x21); // date (1980-01-01)
+        le32(&mut out, crc);
+        le32(&mut out, data.len());
+        le32(&mut out, data.len());
+        le16(&mut out, name.len());
+        le16(&mut out, 0);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // central directory entry
+        le32(&mut central, 0x02014b50);
+        le16(&mut central, 20);
+        le16(&mut central, 20);
+        le16(&mut central, 0);
+        le16(&mut central, 0);
+        le16(&mut central, 0);
+        le16(&mut central, 0x21);
+        le32(&mut central, crc);
+        le32(&mut central, data.len());
+        le32(&mut central, data.len());
+        le16(&mut central, name.len());
+        le16(&mut central, 0); // extra
+        le16(&mut central, 0); // comment
+        le16(&mut central, 0); // disk
+        le16(&mut central, 0); // internal attributes
+        le32(&mut central, 0); // external attributes
+        le32(&mut central, offset);
+        central.extend_from_slice(name.as_bytes());
+    }
+    let cd_offset = out.len();
+    out.extend_from_slice(&central);
+    le32(&mut out, 0x06054b50);
+    le16(&mut out, 0);
+    le16(&mut out, 0);
+    le16(&mut out, files.len());
+    le16(&mut out, files.len());
+    le32(&mut out, central.len());
+    le32(&mut out, cd_offset);
+    le16(&mut out, 0);
+    out
+}
+
+#[cfg(test)]
+mod write_tests {
+    #[test]
+    fn written_zips_read_back() {
+        let z = super::write_stored(&[("a.txt", b"hello".to_vec()), ("b/c.bin", vec![0, 1, 2, 255])]);
+        let r = super::Zip::from_bytes(z).unwrap();
+        assert_eq!(r.read("a.txt").unwrap(), b"hello");
+        assert_eq!(r.read("b/c.bin").unwrap(), vec![0, 1, 2, 255]);
+    }
+}

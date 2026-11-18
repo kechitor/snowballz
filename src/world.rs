@@ -55,6 +55,8 @@ pub struct Tile {
     pub resource: Option<usize>,
     pub region: usize,
     pub elevation: f64,
+    /// a snow wall section on it (`World::walls`)
+    pub wall: Option<usize>,
 }
 
 pub struct Region {
@@ -150,19 +152,20 @@ impl Dmo {
             obstruction,
             minimapimage,
             animate,
-            alpha: if animate { 0.5 } else { 1.0 },
-            speed: 0.02,
+            alpha: if animate { 0.7 } else { 1.0 },
+            speed: 0.012,
         }
     }
 
     pub fn doanimate(&mut self) {
         if self.animate {
             self.alpha += self.speed;
-            if self.alpha > 0.8 {
-                self.alpha = 0.8;
+            // (a gentle pulse, see-through enough not to hide things)
+            if self.alpha > 0.85 {
+                self.alpha = 0.85;
                 self.speed = -self.speed;
-            } else if self.alpha < 0.4 {
-                self.alpha = 0.4;
+            } else if self.alpha < 0.45 {
+                self.alpha = 0.45;
                 self.speed = -self.speed;
             }
         }
@@ -268,7 +271,9 @@ pub struct Emblem {
 
 impl Emblem {
     pub fn new(image_name: &str, animate: bool, offset: (i32, i32)) -> Emblem {
-        Emblem { image_name: image_name.to_string(), animate, offset, alpha: if animate { 0.5 } else { 1.0 } }
+        // (power-up icons over a carrier: a little see-through, so they
+        // don't hide what's behind them)
+        Emblem { image_name: image_name.to_string(), animate, offset, alpha: if animate { 0.7 } else { 1.0 } }
     }
 }
 
@@ -312,6 +317,23 @@ pub struct Unit {
     pub next_position: Option<((i32, i32), (i32, i32), State, Option<ResKind>)>,
     pub next_snowball: Option<(f64, f64, f64, f64, usize)>,
     pub last_state_sent: State,
+    /// Sent home to change class (worker <-> snowballer).
+    pub switch_pending: bool,
+    /// Inside, changing class: done at this time.
+    pub switch_done_at: Option<u32>,
+    /// The warmth last drawn, and when it last went down (a hit: the
+    /// penguin flashes blue for a moment).
+    pub drawn_warmth: i32,
+    pub hit_at: Option<u32>,
+    /// (workers) the wall section it builds / turns into ice / patches up
+    pub build_wall: Option<usize>,
+    /// (snowballers) the enemy wall section it was sent to knock down
+    pub wall_target: Option<usize>,
+    /// The way round walls (see `path`): the tiles still to go, where to,
+    /// and the walls it was found for (`World::wall_version`).
+    pub path: Vec<(i32, i32)>,
+    pub path_goal: Option<(i32, i32)>,
+    pub path_version: u32,
 }
 
 impl Unit {
@@ -462,6 +484,7 @@ pub struct Textures {
     pub smoke: Tex,
     pub selected: Tex,
     pub marker: Tex,
+    pub frozen_flag: Tex,
     pub jeopardy_marker: Tex,
     pub igloo: Tex,
 }
@@ -507,6 +530,7 @@ impl Textures {
             smoke: gfx::texture("data/smoke.png"),
             selected: gfx::texture("data/selected.png"),
             marker: gfx::texture("data/marker.png"),
+            frozen_flag: gfx::texture("data/frozen_flag.png"),
             jeopardy_marker: gfx::texture("data/jeopardy_marker.png"),
             igloo: gfx::texture("data/igloo.png"),
         }
@@ -628,7 +652,39 @@ pub struct World {
     pub draw_buffer: Vec<Rendered>,
     /// the local player was defeated and watches the rest of the game
     pub spectating: bool,
+    /// The frozen penguin clicked last (its thaw countdown stays shown).
+    pub inspected: Option<usize>,
+    /// The last place the player sent penguins to, and which ones (a
+    /// second order there makes them run past the enemies).
+    pub last_order: Option<((i32, i32), BTreeSet<usize>)>,
+    /// When the next power-ups drop (game time), and when the last ones
+    /// did (for the countdown on the screen).
+    pub powerup_drop_at: Option<u32>,
+    /// The squad key / button pressed last, and when (double tap: look).
+    pub last_squad_tap: Option<(usize, u32)>,
+    /// Alliances: each allied player's team (players without one are on
+    /// their own), the offers waiting for an answer (from, to, when) and
+    /// whether the alliances panel is open.
+    pub teams: BTreeMap<Pid, u32>,
+    pub next_team: u32,
+    pub offers: Vec<(Pid, Pid, u32)>,
+    pub diplomacy_open: bool,
+    pub powerup_dropped_at: Option<u32>,
     pub holding_mouse: bool,
+    /// Snow wall sections, and planning them: the mode (B / U) and which
+    /// way the wall piece being placed lies (`wall::ROTATIONS`).
+    pub walls: Vec<crate::wall::Wall>,
+    /// Goes up whenever a wall tile goes up or comes down (paths round the
+    /// walls are found again).
+    pub wall_version: u32,
+    /// Match statistics per player (counted by the host, sent to everybody
+    /// at the end), when the match started (game time) and how long it ran
+    /// (as the host says).
+    pub stats: BTreeMap<Pid, crate::stats::Stats>,
+    pub started_at: u32,
+    pub match_ms: Option<u32>,
+    pub wall_mode: Option<crate::wall::WallMode>,
+    pub wall_rot: usize,
 }
 
 pub const UNIT_NODE: i32 = 7;
@@ -670,7 +726,7 @@ impl World {
     /// Load maps/<name>.zip.  Plugins are only started on a server (or in
     /// single player); clients get their state from the server.
     pub fn load(name: &str, role: Role, net: Option<Net>, view: View, chat_font: Font, stat_font: Font) -> Result<World, String> {
-        let z = Zip::open(&format!("maps/{}.zip", name))?;
+        let z = Zip::open(&settings::map_path(name))?;
         let config = Ini::parse(&String::from_utf8_lossy(&z.read("settings.ini")?));
         let get = |k: &str| config.get("map", k).map(|s| s.to_string());
         let img = |k: &str| -> Result<Option<Image>, String> {
@@ -732,7 +788,23 @@ impl World {
             stat_font,
             draw_buffer: Vec::new(),
             spectating: false,
+            inspected: None,
+            last_order: None,
+            powerup_drop_at: None,
+            last_squad_tap: None,
+            teams: BTreeMap::new(),
+            next_team: 0,
+            offers: Vec::new(),
+            diplomacy_open: false,
+            powerup_dropped_at: None,
             holding_mouse: false,
+            walls: Vec::new(),
+            wall_version: 0,
+            stats: BTreeMap::new(),
+            started_at: 0,
+            match_ms: None,
+            wall_mode: None,
+            wall_rot: 0,
         };
 
         // regions and terrain (regions in the order the Python version made
@@ -761,7 +833,7 @@ impl World {
                 }
                 let idx = (y * size.0 + x) as usize;
                 w.regions[ri].tiles.push(idx);
-                tiles[idx] = Some(Tile { x, y, kind, building: None, building_root: false, resource: None, region: ri, elevation });
+                tiles[idx] = Some(Tile { x, y, kind, building: None, building_root: false, resource: None, region: ri, elevation, wall: None });
             }
         }
         w.tiles = tiles.into_iter().map(|t| t.unwrap()).collect();
@@ -919,8 +991,8 @@ impl World {
         }
     }
 
-    /// Turn a penguin (still in its igloo, at the start) into another kind.
-    fn set_unit_kind(&mut self, u: usize, kind: UnitKind) {
+    /// Turn a penguin (in its igloo) into another kind.
+    pub fn set_unit_kind(&mut self, u: usize, kind: UnitKind) {
         if u >= self.units.len() || self.units[u].kind == kind {
             return;
         }
@@ -932,6 +1004,10 @@ impl World {
         unit.holding = None;
         unit.snowballs = if kind == UnitKind::Snowballer { 1 } else { 0 };
         unit.going_for = if kind == UnitKind::Worker { Some(ResKind::Fish) } else { None };
+        unit.target_resource = None;
+        unit.gathering_from = None;
+        unit.build_wall = None;
+        unit.wall_target = None;
     }
 
     fn new_unit(&mut self, kind: UnitKind, pos: (i32, i32), igloo: usize) {
@@ -979,6 +1055,15 @@ impl World {
             next_position: None,
             next_snowball: None,
             last_state_sent: State::InBuilding,
+            switch_pending: false,
+            switch_done_at: None,
+            drawn_warmth: cfg.max_warmth,
+            hit_at: None,
+            build_wall: None,
+            wall_target: None,
+            path: Vec::new(),
+            path_goal: None,
+            path_version: 0,
         });
         self.buildings[igloo].units.insert(id);
         self.buildings[igloo].units_in_building.insert(id);
@@ -1030,6 +1115,9 @@ impl World {
         if self.buildings[bi].player == Some(p) {
             return;
         }
+        if self.buildings[bi].player.is_some() {
+            crate::stats::add(self, Some(p), |s| s.igloos += 1);
+        }
         self.buildings[bi].player = Some(p);
         let units: Vec<usize> = self.buildings[bi].units.iter().copied().collect();
         for u in units {
@@ -1078,6 +1166,11 @@ impl World {
         let Some(p) = self.players.get_mut(&pid) else { return };
         if p.victory != v {
             p.victory = v;
+            // (the totals go out before the winner, for the after-match
+            // screen)
+            if self.role == Role::Server && v == Some(true) {
+                crate::stats::broadcast(self);
+            }
             if self.role == Role::Server {
                 self.send(Msg::PlayerVictory { player_id: pid, victory: v });
             }
@@ -1281,6 +1374,21 @@ impl World {
     }
 
     /// Units around a tile (the 3x3 nodes of 7x7 tiles around it).
+    /// The penguins in the nodes that cover `r` tiles around (x, y).
+    pub fn units_within(&self, x: i32, y: i32, r: i32) -> Vec<usize> {
+        let (nx0, nx1) = ((x - r).div_euclid(UNIT_NODE), (x + r).div_euclid(UNIT_NODE));
+        let (ny0, ny1) = ((y - r).div_euclid(UNIT_NODE), (y + r).div_euclid(UNIT_NODE));
+        let mut out = Vec::new();
+        for ny in ny0..=ny1 {
+            for nx in nx0..=nx1 {
+                if let Some(n) = self.unit_nodes.get(&(nx, ny)) {
+                    out.extend(n.iter().copied());
+                }
+            }
+        }
+        out
+    }
+
     pub fn units_around(&self, x: i32, y: i32) -> Vec<usize> {
         let nx = x.div_euclid(UNIT_NODE);
         let ny = y.div_euclid(UNIT_NODE);

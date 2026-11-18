@@ -31,12 +31,15 @@ macro_rules! eprint {
 }
 
 mod ai;
+mod alliance;
 mod audio;
 mod backgrounds;
 mod clock;
 mod crashlog;
 mod ctrl;
 mod display;
+mod editmap;
+mod editor;
 mod effects;
 mod game;
 mod game_menu;
@@ -50,6 +53,7 @@ mod jpeg;
 mod menu;
 mod net;
 mod online;
+mod path;
 mod plugins;
 mod png;
 mod relay;
@@ -58,12 +62,14 @@ mod rng;
 mod sdl;
 mod settings;
 mod snowball;
+mod stats;
 mod terrain;
 mod ttf;
 mod ui;
 mod unit;
 mod upnp;
 mod vorbis;
+mod wall;
 mod world;
 mod zip;
 

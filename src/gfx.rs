@@ -603,6 +603,18 @@ pub fn image_texture(path: &str) -> Result<Tex, String> {
     Ok(t)
 }
 
+/// Smooth or blocky scaling for one texture (the editor's map is blocky).
+pub fn set_texture_smooth(t: &Tex, smooth: bool) {
+    with(|s| {
+        let p = tex_ptr(s, t);
+        if let (false, Some(f)) = (p.is_null(), sdl::api().SDL_SetTextureScaleMode) {
+            unsafe {
+                f(p, if smooth { 1 } else { 0 });
+            }
+        }
+    })
+}
+
 pub fn free_texture(t: &Tex) {
     with(|s| {
         let d = &mut s.textures[t.id as usize];

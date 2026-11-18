@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn palette() {
-        check("icon.png", "tests/data/icon.rgba");
+        check("tests/data/icon.png", "tests/data/icon.rgba");
     }
 
     #[test]

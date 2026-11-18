@@ -1,6 +1,7 @@
 //! The computer players (ai.py): an offensive and a revengeful
 //! personality, guarding, gathering, and some trash talk.
 
+use crate::alliance;
 use crate::unit;
 use crate::world::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -21,6 +22,8 @@ pub struct Ai {
     grudges: BTreeSet<Pid>,
     last_spite_increase: u32,
     last_grudge_release: u32,
+    // alliances
+    next_offer: Option<u32>,
 }
 
 impl Ai {
@@ -220,11 +223,97 @@ fn attack(w: &mut World, ai: &mut Ai, ri: usize) {
     }
 }
 
+/// Could this player and `other`'s team join without leaving nobody to
+/// fight (an AI doesn't make an alliance that ends the game at once)?
+fn team_ok(w: &World, pid: Pid, other: Pid) -> bool {
+    let size = alliance::team_of(w, pid).len() + alliance::team_of(w, other).len();
+    let alive = w.players.keys().filter(|&&p| alliance::alive(w, p)).count();
+    size < alive && size <= (alive / 2).max(2)
+}
+
+/// Answer offers and now and then make one.
+fn diplomacy(w: &mut World, ai: &mut Ai) {
+    let pid = ai.pid;
+    let now = w.now();
+    // offers to me (give it a moment's thought)
+    let mine: Vec<(Pid, u32)> = w.offers.iter().filter(|o| o.1 == pid).map(|o| (o.0, o.2)).collect();
+    for (from, when) in mine {
+        if now.wrapping_sub(when) < 4000 {
+            continue;
+        }
+        let name = w.player_name(from);
+        let grudge = spite(ai, &name) >= 3 || ai.grudges.contains(&from);
+        let rich = alliance::fish_of(w, pid) >= alliance::ALLIANCE_FISH;
+        let yes = rich && !grudge && team_ok(w, pid, from) && w.rng.random() < 0.65;
+        let text = if yes {
+            "Deal! Together we'll bury them in snow."
+        } else if !rich {
+            "I'd love to, but I can't spare the fish."
+        } else if grudge {
+            "After what you did? Not a chance!"
+        } else {
+            "Thanks, but I work alone."
+        };
+        w.player_send_msg(pid, &format!(">{} {}", name, text));
+        alliance::answer(w, from, pid, yes);
+        if yes {
+            // no more attacks on the new ally
+            ai.warring.remove(&from);
+            ai.grudges.remove(&from);
+        }
+    }
+    // an offer of my own, every few minutes
+    let next = *ai.next_offer.get_or_insert(now.wrapping_add(w.rng.randint(60_000, 150_000) as u32));
+    if (now.wrapping_sub(next) as i32) < 0 {
+        return;
+    }
+    ai.next_offer = Some(now.wrapping_add(w.rng.randint(90_000, 200_000) as u32));
+    if alliance::fish_of(w, pid) < alliance::ALLIANCE_FISH + 10 || w.rng.random() < 0.4 {
+        return;
+    }
+    let candidates: Vec<Pid> = w
+        .players
+        .keys()
+        .copied()
+        .filter(|&p| p != pid && alliance::alive(w, p) && !alliance::allied(w, Some(pid), Some(p)))
+        .filter(|&p| !ai.warring.contains(&p) && !ai.grudges.contains(&p) && team_ok(w, pid, p))
+        .filter(|&p| !w.offers.iter().any(|o| (o.0 == pid && o.1 == p) || (o.0 == p && o.1 == pid)))
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let to = candidates[w.rng.randint(0, candidates.len() as i32 - 1) as usize];
+    let name = w.player_name(to);
+    if spite(ai, &name) >= 3 {
+        return;
+    }
+    w.player_send_msg(pid, &format!(">{} How about an alliance? We could take on the others together.", name));
+    alliance::offer(w, pid, to);
+}
+
 /// One AI turn (every 3 seconds).
 pub fn run(w: &mut World, pid: Pid) {
     let Some(mut ai) = take(w, pid) else { return };
     for m in std::mem::take(&mut ai.send_msgs) {
         w.player_send_msg(pid, &m);
+    }
+    diplomacy(w, &mut ai);
+    // allies are left alone
+    let allies: Vec<Pid> = alliance::team_of(w, pid).into_iter().filter(|&p| p != pid).collect();
+    ai.warring.retain(|p| !allies.contains(p));
+    ai.grudges.retain(|p| !allies.contains(p));
+    let recall: Vec<usize> = ai
+        .attacking
+        .iter()
+        .copied()
+        .filter(|&u| {
+            let t = w.units[u].target_pos.and_then(|(x, y)| w.tile(x, y)).map(|t| w.regions[t.region].player);
+            t.is_some_and(|p| p.is_some_and(|p| allies.contains(&p)))
+        })
+        .collect();
+    for u in recall {
+        w.units[u].target_pos = None;
+        ai.attacking.remove(&u);
     }
 
     // has it taken over a region?
@@ -264,7 +353,7 @@ pub fn run(w: &mut World, pid: Pid) {
     // attack somebody?
     let mut best: Option<(usize, i32)> = None;
     for ri in 0..w.regions.len() {
-        if w.regions[ri].player == Some(pid) {
+        if alliance::friendly(w, w.regions[ri].player, Some(pid)) {
             continue;
         }
         let amount = offensive_attack_region(w, &ai) + revengeful_attack_region(w, &mut ai, ri);
@@ -306,7 +395,7 @@ pub fn run(w: &mut World, pid: Pid) {
     for ui in 0..w.units.len() {
         let u = &w.units[ui];
         let Some(t) = w.tile(u.x, u.y) else { continue };
-        if w.regions[t.region].player == Some(pid) && u.player != Some(pid) && u.warmth > 4 {
+        if w.regions[t.region].player == Some(pid) && !alliance::friendly(w, w.igloo_player(ui), Some(pid)) && u.warmth > 4 {
             enemy_in.entry(t.region).and_modify(|e| e.0 += 1).or_insert((1, u.player));
         }
     }
@@ -338,7 +427,7 @@ pub fn run(w: &mut World, pid: Pid) {
             let enemies = w
                 .units_around(ix, iy)
                 .into_iter()
-                .filter(|&o| w.igloo_player(o) != Some(pid) && w.units[o].kind == UnitKind::Snowballer && w.units[o].warmth > 4)
+                .filter(|&o| !alliance::friendly(w, w.igloo_player(o), Some(pid)) && w.units[o].kind == UnitKind::Snowballer && w.units[o].warmth > 4)
                 .count();
             if enemies <= 1 {
                 w.units[u].set_go_to_building(Some(ig));

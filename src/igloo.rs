@@ -14,14 +14,24 @@ pub fn is_in_range(w: &World, bi: usize, x: i32, y: i32) -> bool {
 pub fn can_enter(w: &World, bi: usize, ui: usize) -> bool {
     let u = &w.units[ui];
     let owner = w.buildings[bi].player;
-    if u.player != owner {
-        u.warmth >= 5
+    // a penguin of the owner (by its own igloo too: `player` could be stale)
+    let own = u.player == owner || w.buildings[u.igloo].player == owner;
+    if !own {
+        // an ally's igloo is not to be taken
+        u.warmth >= 5 && !crate::alliance::allied(w, w.buildings[u.igloo].player, owner)
     } else {
         true
     }
 }
 
 fn unit_exit(w: &mut World, bi: usize, ui: usize) -> Step {
+    // warm, but changing class: another SWITCH_MS inside first
+    if w.units[ui].switch_pending && w.buildings[bi].player == w.igloo_player(ui) {
+        if w.units[ui].switch_done_at.is_none() {
+            w.units[ui].switch_done_at = Some(w.now().wrapping_add(crate::unit::SWITCH_MS));
+        }
+        return Step::Wait;
+    }
     w.units[ui].state = State::Stray;
     w.buildings[bi].units_in_building.remove(&ui);
     w.units[ui].set_go_to_building(None);
@@ -44,19 +54,24 @@ pub fn in_building(w: &mut World, bi: usize, ui: usize) -> Step {
         }
         return Step::Wait;
     }
+    if let Some(t) = w.units[ui].switch_done_at {
+        if (now.wrapping_sub(t) as i32) < 0 {
+            return Step::Wait;
+        }
+        crate::unit::finish_switch(w, bi, ui);
+        return unit_exit(w, bi, ui);
+    }
     let (warmth, max) = (w.units[ui].warmth, w.units[ui].max_warmth);
     if warmth == max {
         // warm: out you go
-        w.buildings[bi].units_in_building.remove(&ui);
-        w.units[ui].state = State::Stray;
-        w.units[ui].set_go_to_building(None);
-        return Step::Go(-1, -1);
+        return unit_exit(w, bi, ui);
     }
     let counter = w.units[ui].counter as f64;
     let wm = warmth.max(1) as f64;
     if counter + 120000.0 / wm <= now as f64 {
         if warmth > max - 2 {
-            w.units[ui].max_warmth = 10;
+            // (this used to reset the most warmth to 10, which took the
+            // defense power-up's extra warmth away for good)
             w.units[ui].snowballs = 2;
             return unit_exit(w, bi, ui);
         } else if w.num_storage(bi, ResKind::Fish) > 0 {
@@ -103,6 +118,13 @@ pub fn unit_enter(w: &mut World, bi: usize, ui: usize) {
         }
     }
     if up == owner {
+        // the penguin now lives here (keep the igloos' lists right, or a
+        // takeover of its old igloo would change its side)
+        let old = w.units[ui].igloo;
+        if old != bi {
+            w.buildings[old].units.remove(&ui);
+            w.buildings[bi].units.insert(ui);
+        }
         w.units[ui].igloo = bi;
     }
 }

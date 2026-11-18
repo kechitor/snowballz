@@ -15,6 +15,16 @@ pub fn selected_counts(w: &World) -> (usize, usize) {
     c
 }
 
+/// The panel's left edge (screen pixels): in the bottom right corner, or
+/// just left of the minimap when that is shown (it used to cover it).
+pub fn panel_x(w: &World) -> f64 {
+    if w.draw_minimap {
+        minimap_rect(w).0 - 64.0 - 8.0
+    } else {
+        w.view.w as f64 - 64.0
+    }
+}
+
 pub fn panel_visible(w: &World) -> bool {
     !w.selected.is_empty()
 }
@@ -25,11 +35,11 @@ pub fn draw_panel(w: &World) {
         return;
     }
     let (workers, snowballers) = selected_counts(w);
-    let vw = w.view.w as f64;
+    let px = panel_x(w);
     let pc = w.me_color();
-    gfx::texture("data/selectctrl.png").draw(vw - 64.0, 0.0, [1.0; 4], 1.0);
+    gfx::texture("data/selectctrl.png").draw(px, 0.0, [1.0; 4], 1.0);
     let t = w.tex.penguins["walk"].get(10, (0, 1));
-    let x = vw - 64.0 + 16.0;
+    let x = px + 16.0;
     let black = [0.0, 0.0, 0.0, 1.0];
     if snowballers > 0 {
         let to = w.tex.penguins["snowballerwalk"].get(10, (0, 1));
@@ -43,12 +53,12 @@ pub fn draw_panel(w: &World) {
         to.draw(x, 58.0, [pc[0], pc[1], pc[2], 1.0], 1.0);
         w.chat_font.render(x + 8.0, 58.0 - 19.0, &workers.to_string(), black);
     }
-    gfx::texture("data/marker_leave.png").draw(vw - 64.0 + 16.0, 2.0, [pc[0], pc[1], pc[2], 1.0], 1.0);
+    gfx::texture("data/marker_leave.png").draw(px + 16.0, 2.0, [pc[0], pc[1], pc[2], 1.0], 1.0);
     // how to change class
     let hint = format!("X: change class ({} fish each)", crate::unit::SWITCH_FISH);
     let (tw, th) = w.stat_font.size_of(&hint);
     let (tw, th) = (tw as f64, th as f64);
-    let hx = vw - 64.0 - tw - 14.0;
+    let hx = px - tw - 14.0;
     gfx::fill_rect(hx - 6.0, 4.0, tw + 12.0, th + 6.0, Some([0.07, 0.09, 0.16, 0.6]));
     w.stat_font.render(hx, 7.0, &hint, [0.9, 0.95, 1.0, 1.0]);
     // and (workers) walls
@@ -56,7 +66,7 @@ pub fn draw_panel(w: &World) {
         let hint = format!("B: snow wall   U: ice wall ({} crystal an {}-tile section)", crate::wall::ICE_CRYSTAL, crate::wall::SECTION_TILES);
         let (tw, _) = w.stat_font.size_of(&hint);
         let tw = tw as f64;
-        let hx = vw - 64.0 - tw - 14.0;
+        let hx = px - tw - 14.0;
         let y = 4.0 + th + 10.0;
         gfx::fill_rect(hx - 6.0, y, tw + 12.0, th + 6.0, Some([0.07, 0.09, 0.16, 0.6]));
         w.stat_font.render(hx, y + 3.0, &hint, [0.9, 0.95, 1.0, 1.0]);
@@ -90,7 +100,8 @@ pub fn draw_wall_mode(w: &World) {
 
 /// Is the (screen) position over the panel?
 pub fn in_panel(w: &World, pos: (i32, i32)) -> bool {
-    panel_visible(w) && pos.0 > w.view.w - 64 && pos.1 > w.view.h - 160
+    let px = panel_x(w);
+    panel_visible(w) && pos.0 as f64 > px && (pos.0 as f64) < px + 64.0 && pos.1 > w.view.h - 160
 }
 
 pub enum PanelClick {
@@ -127,6 +138,17 @@ pub fn keep_kind(w: &mut World, kind: UnitKind) {
             w.selected.remove(&u);
         }
     }
+}
+
+/// The minimap's place on the screen (left, top, width, height; y down)
+/// and its pixels per tile.
+fn minimap_rect(w: &World) -> (f64, f64, f64, f64, f64) {
+    let (vw, vh) = (w.view.w as f64, w.view.h as f64);
+    let (mw, mh) = (w.size.0.max(1) as f64, w.size.1.max(1) as f64);
+    let side = (vh * MINIMAP_SHARE).clamp(120.0, 320.0);
+    let k = side / mw.max(mh);
+    let (bw, bh) = (mw * k, mh * k);
+    (vw - MINIMAP_MARGIN - bw, vh - MINIMAP_MARGIN - bh, bw, bh, k)
 }
 
 // -- minimap ------------------------------------------------------------------
@@ -178,12 +200,7 @@ impl Minimap {
     /// Where it is: (x, top, width, height) in screen pixels (y down), and
     /// pixels per tile.
     fn rect(&self, w: &World) -> (f64, f64, f64, f64, f64) {
-        let (vw, vh) = (w.view.w as f64, w.view.h as f64);
-        let (mw, mh) = (w.size.0.max(1) as f64, w.size.1.max(1) as f64);
-        let side = (vh * MINIMAP_SHARE).clamp(120.0, 320.0);
-        let k = side / mw.max(mh);
-        let (bw, bh) = (mw * k, mh * k);
-        (vw - MINIMAP_MARGIN - bw, vh - MINIMAP_MARGIN - bh, bw, bh, k)
+        minimap_rect(w)
     }
 
     /// The tile under a screen position (y down), if on the minimap.

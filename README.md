@@ -104,6 +104,37 @@ decide the mix, from all workers to all snowballers.
 * Your choice is remembered for each map (in the settings file). Each AI
   player gets a random mix (a quarter to four fifths snowballers).
 
+Alerts
+------
+When one of your igloos is being taken, or your penguins are hit somewhere
+you aren't looking, an alert shows at the top left with a warning sound.
+Click it, or press `J`, to move the view there. **Sound effects** in
+Settings sets the warning sounds' volume. They are made from scratch by
+`tools/sounds/make_sounds.py` into `data/sounds/` (16-bit WAV files: you
+can replace them with your own).
+
+Computer players
+----------------
+Each computer player has a level: **Easy**, **Normal** or **Hard**. New
+games use the level set in Settings (*Computer players*); during a match
+the host (or the single player) can change any of them in the players
+panel (`P`). Every level gathers, attacks and makes alliances; on top of
+that:
+
+* They follow a strategy: building up, attacking when their snowballers
+  outnumber the strongest enemy's, and defending when enemies come near
+  their igloos (sending snowballers home, into the igloo if it is being
+  taken).
+* Normal and Hard also pick up power-ups, switch penguins between worker
+  and snowballer to fit the strategy (paying the fish like a player), and
+  build snow walls facing their nearest enemies (Normal one section, Hard
+  up to three, turned into ice when there is crystal to spare).
+* Easy thinks slowly and aims worse than a player; Hard thinks fast,
+  attacks sooner, and aims better.
+
+Your own snowballers no longer all run home when one of your igloos is
+being taken: the alert tells you, and you decide who goes.
+
 Start and end of a match
 ------------------------
 Every match starts with a 3, 2, 1, Go! countdown: nobody moves until "Go!",
@@ -235,6 +266,7 @@ Controls
 | click a penguin type in the panel (bottom right) | keep only that type selected; the arrow disbands them |
 | `O` | disband the selected penguins |
 | `P` | the alliances panel; `Y` / `N` accept / reject an alliance offer |
+| `J` | look where the last alert (igloo being taken, penguins under attack) happened; or click the alert |
 | `B` (workers selected) | place an 8-tile snow wall section: `R` / mouse wheel rotates, click puts it down, `Shift` keeps placing; right click your wall to take it down |
 | `U` (workers selected) | turn your snow wall into ice: click a section (1 crystal each) |
 | right click a wall | workers: build / patch up / finish turning it into ice; snowballers: knock it down |
@@ -242,7 +274,7 @@ Controls
 | `Ctrl`+`1`..`9` | make the selected penguins a squad (a penguin is in one squad at a time; its number shows on it) |
 | `Shift`+`1`..`9` | add the selected penguins to that squad |
 | `1`..`9`, or click a squad's button (bottom left) | select that squad; press / click twice quickly to look at it |
-| hold `Space` | minimap (click on it to move the view) |
+| `Space` | hide / show the minimap (bottom right): click or drag on it to move the view, right click to send the selected penguins there |
 | mouse wheel / `Page Up` / `Page Down` | zoom (in to 3x, out until the map just fits) |
 | move the mouse to the screen edge / arrow keys / `W` `A` `S` `D` | scroll |
 | `Home` | jump to your igloo |

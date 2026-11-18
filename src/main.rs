@@ -31,6 +31,7 @@ macro_rules! eprint {
 }
 
 mod ai;
+mod alerts;
 mod alliance;
 mod audio;
 mod backgrounds;
@@ -61,6 +62,7 @@ mod relay_common;
 mod rng;
 mod sdl;
 mod settings;
+mod sfx;
 mod snowball;
 mod stats;
 mod terrain;
@@ -157,6 +159,7 @@ fn main() {
     }
     settings::load();
     audio::set_levels(settings::sound_level("volume"), settings::sound_level("music"));
+    sfx::set_level(settings::sound_level("effects"));
     let (w, h) = settings::get_res();
     if let Err(e) = gfx::init(w, h, settings::get_option("fullscreen") == "1", "Snowballz") {
         eprintln!("{}", e);

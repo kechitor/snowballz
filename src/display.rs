@@ -35,11 +35,12 @@ fn draw_unit(w: &mut World, ui: usize) {
         u.drawn_warmth = u.warmth;
     }
     let flash = match w.units[ui].hit_at {
-        Some(t) if now.wrapping_sub(t) < HIT_FLASH_MS => 1.0 - now.wrapping_sub(t) as f32 / HIT_FLASH_MS as f32,
+        // (full strength for the first part, then fading)
+        Some(t) if now.wrapping_sub(t) < HIT_FLASH_MS => ((1.0 - now.wrapping_sub(t) as f32 / HIT_FLASH_MS as f32) / 0.6).min(1.0),
         _ => 0.0,
     };
     let tint = |c: [f32; 4]| -> [f32; 4] {
-        let b = [0.45, 0.68, 1.0];
+        let b = [0.12, 0.38, 1.0];
         [c[0] * (1.0 - flash * (1.0 - b[0])), c[1] * (1.0 - flash * (1.0 - b[1])), c[2] * (1.0 - flash * (1.0 - b[2])), c[3]]
     };
 
@@ -160,6 +161,7 @@ fn draw_building(w: &mut World, bi: usize) {
 }
 
 pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
+    crate::alerts::tick(w);
     let now = clock::now();
     gfx::set_time(now);
     let (vw, vh) = (w.view.scale_w() as f64, w.view.scale_h() as f64);
@@ -334,9 +336,7 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
     }
     draw_messages(w);
     hud::draw_panel(w);
-    if w.draw_minimap {
-        s.minimap.draw(w);
-    }
+    s.minimap.draw(w);
     if w.show_fps {
         w.chat_font.render(sw - 130.0, sh - 30.0, &format!("FPS: {}", s.fps.round() as i64), [1.0, 1.0, 0.3, 1.0]);
     }
@@ -344,6 +344,7 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
     draw_drop_countdown(w, now);
     crate::hud::draw_squads(w);
     crate::hud::draw_wall_mode(w);
+    crate::hud::draw_alert(w);
     crate::hud::draw_crystal_race(w);
     crate::hud::draw_alliances(w);
     draw_countdown(s, w);

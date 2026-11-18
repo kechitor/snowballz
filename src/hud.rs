@@ -131,58 +131,159 @@ pub fn keep_kind(w: &mut World, kind: UnitKind) {
 
 // -- minimap ------------------------------------------------------------------
 
+/// The minimap, in the bottom right corner: the land (snow, ice, trees,
+/// fish holes, crystal), igloos and penguins in their players' colours,
+/// walls, power-ups, the view, and a blinking alert.  Left click (or drag)
+/// moves the view; right click sends the selected penguins there.  Space
+/// hides / shows it.
 pub struct Minimap {
-    pub scale: f64,
-    pub draw_x: f64,
-    pub draw_y: f64,
+    land: Option<gfx::Tex>,
 }
+
+/// The minimap's size: its longer side, as a share of the screen height ...
+const MINIMAP_SHARE: f64 = 0.3;
+/// ... and the gap to the screen's edges.
+const MINIMAP_MARGIN: f64 = 10.0;
 
 impl Minimap {
     pub fn new(w: &World) -> Minimap {
-        let (vw, vh) = (w.view.w as f64, w.view.h as f64);
-        let (mw, mh) = (w.size.0 as f64, w.size.1 as f64);
-        let scale = (vh / mw).min(vw / mh);
-        Minimap { scale, draw_x: (-(scale * mw - vw) / 2.0).floor(), draw_y: ((scale * mh - vh) / 2.0).floor() + vh }
-    }
-
-    pub fn draw(&self, w: &mut World) {
-        gfx::push();
-        gfx::translate(self.draw_x, self.draw_y);
-        gfx::scale(self.scale, self.scale);
-        gfx::fill_rect(0.0, 0.0, w.size.0 as f64, -(w.size.1 as f64), Some([0.0, 0.0, 0.0, 0.3]));
-        for b in &w.buildings {
-            if let Some(p) = b.player {
-                let c = w.glcolor(Some(p));
-                gfx::draw_points(&[(b.x as f64, -(b.y as f64))], [c[0], c[1], c[2], 1.0], 4);
+        let (mw, mh) = (w.size.0.max(1) as usize, w.size.1.max(1) as usize);
+        let mut img = crate::image::Image::new(mw, mh);
+        let (lo, hi) = w.tiles.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(t.elevation), b.max(t.elevation)));
+        for t in &w.tiles {
+            let mut c: [f32; 3] = match t.kind {
+                TileKind::Snow => [232.0, 236.0, 244.0],
+                TileKind::Ice => [168.0, 196.0, 232.0],
+            };
+            // (higher ground lighter, lower darker)
+            let e = if hi > lo { ((t.elevation - lo) / (hi - lo)) as f32 } else { 0.5 };
+            let k = 0.82 + 0.18 * e;
+            c = [c[0] * k, c[1] * k, c[2] * k];
+            if let Some(r) = t.resource {
+                c = match w.resources[r].kind {
+                    ResKind::Tree => [52.0, 128.0, 62.0],
+                    ResKind::IcePinnacle => [120.0, 150.0, 200.0],
+                    ResKind::Fish => [60.0, 100.0, 210.0],
+                    ResKind::Crystal => [120.0, 230.0, 250.0],
+                };
+            }
+            let i = ((t.y as usize) * mw + t.x as usize) * 4;
+            if i + 3 < img.px.len() {
+                img.px[i..i + 4].copy_from_slice(&[c[0] as u8, c[1] as u8, c[2] as u8, 255]);
             }
         }
-        for ui in 0..w.units.len() {
-            let c = w.glcolor(w.igloo_player(ui));
-            let u = &w.units[ui];
-            gfx::draw_points(&[(u.x as f64, -(u.y as f64))], [c[0], c[1], c[2], 1.0], 2);
+        Minimap { land: gfx::texture_from_image(&img).ok() }
+    }
+
+    /// Where it is: (x, top, width, height) in screen pixels (y down), and
+    /// pixels per tile.
+    fn rect(&self, w: &World) -> (f64, f64, f64, f64, f64) {
+        let (vw, vh) = (w.view.w as f64, w.view.h as f64);
+        let (mw, mh) = (w.size.0.max(1) as f64, w.size.1.max(1) as f64);
+        let side = (vh * MINIMAP_SHARE).clamp(120.0, 320.0);
+        let k = side / mw.max(mh);
+        let (bw, bh) = (mw * k, mh * k);
+        (vw - MINIMAP_MARGIN - bw, vh - MINIMAP_MARGIN - bh, bw, bh, k)
+    }
+
+    /// The tile under a screen position (y down), if on the minimap.
+    pub fn tile_at(&self, w: &World, pos: (i32, i32)) -> Option<(f64, f64)> {
+        if !w.draw_minimap {
+            return None;
         }
+        let (x, top, bw, bh, k) = self.rect(w);
+        let (px, py) = (pos.0 as f64, pos.1 as f64);
+        (px >= x && px < x + bw && py >= top && py < top + bh).then(|| ((px - x) / k, (py - top) / k))
+    }
+
+    /// Is the screen position (y down) on it (or its frame)?
+    pub fn contains(&self, w: &World, pos: (i32, i32)) -> bool {
+        if !w.draw_minimap {
+            return false;
+        }
+        let (x, top, bw, bh, _) = self.rect(w);
+        let (px, py) = (pos.0 as f64, pos.1 as f64);
+        px >= x - 3.0 && px < x + bw + 3.0 && py >= top - 3.0 && py < top + bh + 3.0
+    }
+
+    pub fn draw(&mut self, w: &mut World) {
+        if !w.draw_minimap {
+            return;
+        }
+        let sh = w.view.h as f64;
+        let (x, top, bw, bh, k) = self.rect(w);
+        // (ui mode: y counts from the bottom)
+        let yup = |ty: f64, h: f64| sh - ty - h;
+        gfx::fill_rect(x - 3.0, yup(top - 3.0, bh + 6.0), bw + 6.0, bh + 6.0, Some([0.07, 0.09, 0.16, 0.85]));
+        if let Some(t) = &self.land {
+            gfx::blit(t, None, crate::sdl::Rect::new(x as i32, top as i32, bw.round() as i32, bh.round() as i32), 1.0);
+        }
+        let dot = |tx: f64, ty: f64, size: f64, c: [f32; 4]| {
+            let (px, py) = (x + (tx + 0.5) * k - size / 2.0, top + (ty + 0.5) * k - size / 2.0);
+            gfx::fill_rect(px, yup(py, size), size, size, Some(c));
+        };
+        // walls
+        for s in &w.walls {
+            if s.alive && s.work > 0 {
+                let c = if s.ice { [0.55, 0.8, 1.0, 1.0] } else if s.built() { [0.35, 0.38, 0.45, 1.0] } else { [0.35, 0.38, 0.45, 0.45] };
+                dot(s.x as f64, s.y as f64, k.max(1.5), c);
+            }
+        }
+        // power-ups lying about
         for d in w.dmos.iter_mut() {
-            if d.hidden {
+            if !d.hidden && d.minimapimage.is_some() {
+                d.doanimate();
+                let a = (0.4 + d.alpha) as f32;
+                dot(d.position.0 as f64, d.position.1 as f64, 4.0, [1.0, 0.85, 0.2, a.min(1.0)]);
+            }
+        }
+        // igloos (a dark edge, their player's colour)
+        for b in &w.buildings {
+            let (cx, cy) = (b.x as f64 + 1.5, b.y as f64 + 1.5);
+            dot(cx, cy, 9.0, [0.05, 0.05, 0.1, 1.0]);
+            let c = match b.player {
+                Some(p) => w.glcolor(Some(p)),
+                None => [0.85, 0.85, 0.85],
+            };
+            dot(cx, cy, 7.0, [c[0], c[1], c[2], 1.0]);
+            if b.jeopardy && (crate::sdl::ticks() / 250).is_multiple_of(2) {
+                dot(cx, cy, 3.0, [1.0, 1.0, 1.0, 1.0]);
+            }
+        }
+        // penguins
+        for ui in 0..w.units.len() {
+            let u = &w.units[ui];
+            if u.state == State::InBuilding {
                 continue;
             }
-            if let Some(img) = d.minimapimage.clone() {
-                d.doanimate();
-                let t = gfx::texture(&img);
-                t.draw(d.position.0 as f64, -(d.position.1 as f64), [1.0, 1.0, 1.0, d.alpha as f32], 1.0);
+            let c = w.glcolor(w.igloo_player(ui));
+            let a = if u.state == State::Frozen { 0.45 } else { 1.0 };
+            dot(u.x as f64, u.y as f64, 2.5, [c[0], c[1], c[2], a]);
+        }
+        // an alert: a blinking ring
+        if let Some(al) = crate::alerts::showing(w) {
+            if (crate::sdl::ticks() / 300).is_multiple_of(2) {
+                let (ax, ay) = (x + (al.x as f64 + 0.5) * k, top + (al.y as f64 + 0.5) * k);
+                let r = 7.0;
+                let c = Some([1.0, 0.2, 0.15, 1.0]);
+                gfx::fill_rect(ax - r, yup(ay - r, 2.0), 2.0 * r, 2.0, c);
+                gfx::fill_rect(ax - r, yup(ay + r - 2.0, 2.0), 2.0 * r, 2.0, c);
+                gfx::fill_rect(ax - r, yup(ay - r, 2.0 * r), 2.0, 2.0 * r, c);
+                gfx::fill_rect(ax + r - 2.0, yup(ay - r, 2.0 * r), 2.0, 2.0 * r, c);
             }
         }
-        gfx::translate(w.view.x / 32.0, -w.view.y / 32.0);
-        gfx::fill_rect(0.0, 0.0, w.view.scale_w() as f64 / 32.0, -(w.view.scale_h() as f64 / 32.0), Some([0.0, 0.3, 0.3, 0.3]));
-        gfx::pop();
-    }
-
-    /// Screen position -> top left of the view, in world pixels.
-    pub fn pos_to_mappos(&self, w: &World, cx: f64, cy: f64) -> (f64, f64) {
-        let cx = cx - ((self.scale * w.view.scale_w() as f64 / 32.0) / 2.0).floor();
-        let cy = cy - ((self.scale * w.view.scale_h() as f64 / 32.0) / 2.0).floor();
-        let px = cx - self.draw_x;
-        let py = cy - self.draw_y + self.scale * w.size.1 as f64;
-        ((px * 32.0 / self.scale).floor(), (py * 32.0 / self.scale).floor())
+        // the view
+        let (vx, vy) = (x + w.view.x / 32.0 * k, top + w.view.y / 32.0 * k);
+        let (vw, vh) = (w.view.scale_w() as f64 / 32.0 * k, w.view.scale_h() as f64 / 32.0 * k);
+        let (cx0, cy0) = (vx.max(x), vy.max(top));
+        let (cx1, cy1) = ((vx + vw).min(x + bw), (vy + vh).min(top + bh));
+        if cx1 > cx0 && cy1 > cy0 {
+            let c = Some([1.0, 1.0, 1.0, 0.9]);
+            gfx::fill_rect(cx0, yup(cy0, 1.5), cx1 - cx0, 1.5, c);
+            gfx::fill_rect(cx0, yup(cy1 - 1.5, 1.5), cx1 - cx0, 1.5, c);
+            gfx::fill_rect(cx0, yup(cy0, cy1 - cy0), 1.5, cy1 - cy0, c);
+            gfx::fill_rect(cx1 - 1.5, yup(cy0, cy1 - cy0), 1.5, cy1 - cy0, c);
+        }
     }
 }
 
@@ -314,6 +415,8 @@ pub enum AllyAction {
     Offer(Pid),
     Accept(Pid),
     Reject(Pid),
+    /// (the host) a computer player's level: the next one
+    Level(Pid),
     /// a click on the panel that does nothing (but isn't a map click)
     Nothing,
 }
@@ -351,7 +454,10 @@ impl Button {
 }
 
 const ROW_H: f64 = 34.0;
-const PANEL_W: f64 = 470.0;
+const PANEL_W: f64 = 580.0;
+/// the computer players' level, in the panel's rows
+const LEVEL_X: f64 = 190.0;
+const LEVEL_W: f64 = 92.0;
 const PANEL_X: f64 = 16.0;
 const PANEL_TOP: f64 = 110.0;
 const POPUP_TOP: f64 = 58.0;
@@ -397,6 +503,11 @@ fn ally_buttons(w: &World) -> Vec<Button> {
     for p in panel_players(w) {
         let bx = PANEL_X + PANEL_W - 190.0;
         let by = y + 4.0;
+        // a computer player's level: the host (or single player) sets it
+        if w.is_server() && w.players.get(&p).is_some_and(|pl| pl.kind == PlayerKind::Ai) {
+            let l = w.players[&p].ai_level;
+            out.push(Button { x: PANEL_X + LEVEL_X, y: by, w: LEVEL_W, h: ROW_H - 8.0, label: format!("AI: {}", l.label()), action: AllyAction::Level(p), on: true });
+        }
         if !crate::alliance::alive(w, p) || crate::alliance::allied(w, Some(me), Some(p)) {
             // (status text only)
         } else if w.offers.iter().any(|o| o.0 == p && o.1 == me) {
@@ -436,7 +547,7 @@ pub fn draw_alliances(w: &World) {
     let now = w.now();
     // the hint, above the squad buttons
     if !w.chat.chatting {
-        let hint = if w.diplomacy_open { "P: close alliances" } else { "P: alliances" };
+        let hint = if w.diplomacy_open { "P: close players & alliances" } else { "P: players & alliances" };
         let (tw, th) = w.stat_font.size_of(hint);
         let y = 10.0 + 40.0 + 8.0;
         gfx::fill_rect(10.0, y, tw as f64 + 12.0, th as f64 + 6.0, Some([0.07, 0.09, 0.16, 0.6]));
@@ -453,7 +564,7 @@ pub fn draw_alliances(w: &World) {
         let h = panel_height(w);
         gfx::fill_rect(PANEL_X, sh - PANEL_TOP - h, PANEL_W, h, Some([0.07, 0.09, 0.16, 0.88]));
         let mut y = sh - PANEL_TOP - ROW_H + 6.0;
-        font.render(PANEL_X + 14.0, y, "Alliances", [1.0, 0.85, 0.5, 1.0]);
+        font.render(PANEL_X + 14.0, y, "Players and alliances", [1.0, 0.85, 0.5, 1.0]);
         let sub = format!("{} fish each side; you have {}. Allies don't fight and win together.", crate::alliance::ALLIANCE_FISH, crate::alliance::fish_of(w, me));
         w.stat_font.render(PANEL_X + 14.0, y - 18.0, &sub, [0.75, 0.82, 0.95, 1.0]);
         y -= ROW_H * 1.5 - 6.0;
@@ -464,6 +575,9 @@ pub fn draw_alliances(w: &World) {
             let c = pl.glcolor;
             gfx::fill_rect(PANEL_X + 14.0, y + 2.0, 14.0, 14.0, Some([c[0], c[1], c[2], a]));
             font.render(PANEL_X + 36.0, y - 2.0, &pl.name, [0.9, 0.94, 1.0, a]);
+            if pl.kind == PlayerKind::Ai && !w.is_server() {
+                w.stat_font.render(PANEL_X + LEVEL_X + 8.0, y, &format!("AI: {}", pl.ai_level.label()), [0.75, 0.82, 0.95, a]);
+            }
             let status = if !alive {
                 Some(("out of the game".to_string(), [0.6, 0.6, 0.65, 1.0]))
             } else if crate::alliance::allied(w, Some(me), Some(p)) {
@@ -483,4 +597,45 @@ pub fn draw_alliances(w: &World) {
     for b in ally_buttons(w) {
         b.draw(w);
     }
+}
+
+// --- alerts -------------------------------------------------------------
+
+const ALERT_TOP: f64 = 96.0;
+const ALERT_H: f64 = 44.0;
+
+/// Where the alert box is (x, top, width), top-left origin, if one shows.
+fn alert_box(w: &World) -> Option<(f64, f64, f64, &crate::alerts::Alert)> {
+    let a = crate::alerts::showing(w)?;
+    let (tw, _) = w.chat_font.size_of(a.text());
+    let (hw, _) = w.stat_font.size_of(ALERT_HINT);
+    Some((10.0, ALERT_TOP, (tw.max(hw) as f64) + 34.0, a))
+}
+
+const ALERT_HINT: &str = "Click here or press J to look";
+
+/// The alert (top left): red for an igloo being taken, orange for an
+/// attack; it blinks for its first seconds.
+pub fn draw_alert(w: &World) {
+    let Some((x, top, bw, a)) = alert_box(w) else { return };
+    let sh = w.view.h as f64;
+    let age = crate::sdl::ticks().wrapping_sub(a.at);
+    let fade = (1.0 - (age as f32 - (crate::alerts::SHOW_MS - 800) as f32) / 800.0).clamp(0.0, 1.0);
+    let blink = if age < 2400 && (age / 300) % 2 == 0 { 1.0 } else { 0.75 };
+    let col = match a.kind {
+        crate::alerts::AlertKind::Igloo => [0.75, 0.1, 0.1],
+        crate::alerts::AlertKind::Attack => [0.85, 0.42, 0.05],
+    };
+    // (ui mode: y counts from the bottom)
+    let y = sh - top - ALERT_H;
+    gfx::fill_rect(x, y, bw, ALERT_H, Some([col[0] * blink, col[1] * blink, col[2] * blink, 0.88 * fade]));
+    gfx::fill_rect(x, y, 5.0, ALERT_H, Some([1.0, 1.0, 1.0, 0.9 * fade]));
+    w.chat_font.render(x + 17.0, y + 20.0, a.text(), [1.0, 1.0, 1.0, fade]);
+    w.stat_font.render(x + 17.0, y + 5.0, ALERT_HINT, [1.0, 0.92, 0.85, fade]);
+}
+
+/// Is the mouse on the alert?  (top-left origin)
+pub fn alert_at(w: &World, pos: (i32, i32)) -> bool {
+    let (px, py) = (pos.0 as f64, pos.1 as f64);
+    alert_box(w).is_some_and(|(x, top, bw, _)| px >= x && px < x + bw && py >= top && py < top + ALERT_H)
 }

@@ -1,5 +1,8 @@
 //! The computer players (ai.py): an offensive and a revengeful
-//! personality, guarding, gathering, and some trash talk.
+//! personality, guarding, gathering, and some trash talk; and on top of
+//! that (smarts below): a difficulty of their own, a strategy that follows
+//! the situation (build up, attack, defend), defending their igloos,
+//! picking up power-ups, changing penguins' classes and building walls.
 
 use crate::alliance;
 use crate::unit;
@@ -24,6 +27,156 @@ pub struct Ai {
     last_grudge_release: u32,
     // alliances
     next_offer: Option<u32>,
+    // the smarts
+    next_think: u32,
+    pub mode: Mode,
+    next_switch: u32,
+    next_wall: u32,
+    walls_planned: u32,
+    /// when the strategy last changed
+    mode_since: u32,
+    /// snowballers sent to pick up a power-up: where it lies
+    runners: BTreeMap<usize, (i32, i32)>,
+    /// snowballers sent home to defend
+    defenders: BTreeSet<usize>,
+}
+
+/// How well a computer player plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiLevel {
+    /// slow to act, poor aim, no power-ups, class changes or walls
+    Easy,
+    #[default]
+    Normal,
+    /// quick, good aim, everything
+    Hard,
+}
+
+impl AiLevel {
+    pub const ALL: [AiLevel; 3] = [AiLevel::Easy, AiLevel::Normal, AiLevel::Hard];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AiLevel::Easy => "Easy",
+            AiLevel::Normal => "Normal",
+            AiLevel::Hard => "Hard",
+        }
+    }
+
+    pub fn index(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_index(i: u8) -> AiLevel {
+        *AiLevel::ALL.get(i as usize).unwrap_or(&AiLevel::Normal)
+    }
+
+    pub fn next(self) -> AiLevel {
+        AiLevel::from_index((self.index() + 1) % 3)
+    }
+
+    /// How often it thinks (ms).
+    fn think_ms(self) -> u32 {
+        match self {
+            AiLevel::Easy => 5000,
+            AiLevel::Normal => 3000,
+            AiLevel::Hard => 1500,
+        }
+    }
+
+    /// Its snowballers' aim: the share of further throws on target,
+    /// against a player's.
+    pub fn aim(self) -> f64 {
+        match self {
+            AiLevel::Easy => 0.6,
+            AiLevel::Normal => 1.0,
+            AiLevel::Hard => 1.3,
+        }
+    }
+
+    /// It attacks when its warm snowballers outnumber the strongest
+    /// enemy's this many times.
+    fn attack_ratio(self) -> f64 {
+        match self {
+            AiLevel::Easy => 1.6,
+            AiLevel::Normal => 1.2,
+            AiLevel::Hard => 0.95,
+        }
+    }
+}
+
+/// The default level for new computer players (Settings).
+pub fn default_level() -> AiLevel {
+    AiLevel::from_index(crate::settings::get_option("ailevel").trim().parse().unwrap_or(1))
+}
+
+/// A player's level (Normal for people).
+pub fn level_of(w: &World, p: Option<Pid>) -> AiLevel {
+    p.and_then(|p| w.players.get(&p)).filter(|p| p.kind == PlayerKind::Ai).map(|p| p.ai_level).unwrap_or_default()
+}
+
+const LEVEL_PREFIX: &str = "#ai-level ";
+
+/// Set a computer player's level (the host; everybody is told).
+pub fn set_level(w: &mut World, pid: Pid, level: AiLevel) {
+    let Some(p) = w.players.get_mut(&pid) else { return };
+    if p.kind != PlayerKind::Ai {
+        return;
+    }
+    p.ai_level = level;
+    if w.role == Role::Server {
+        let m = level_message(pid, level);
+        w.send(m);
+    }
+}
+
+fn level_message(pid: Pid, level: AiLevel) -> crate::net::Msg {
+    crate::net::Msg::ChatMessage { msg: format!("{}{} {}", LEVEL_PREFIX, pid, level.index()), from_id: crate::plugins::TIMER_FROM, to_id: 0xffff }
+}
+
+/// Host: every computer player's level, to a player who joined.
+pub fn send_levels_to(w: &mut World, c: crate::net::ConnId) {
+    let all: Vec<(Pid, AiLevel)> = w.players.values().filter(|p| p.kind == PlayerKind::Ai).map(|p| (p.id, p.ai_level)).collect();
+    for (pid, l) in all {
+        let m = level_message(pid, l);
+        w.send_to(m, &[c], &[]);
+    }
+}
+
+/// Host: every computer player's level, to everybody (the match starts).
+pub fn send_levels(w: &mut World) {
+    if w.role != Role::Server {
+        return;
+    }
+    let all: Vec<(Pid, AiLevel)> = w.players.values().filter(|p| p.kind == PlayerKind::Ai).map(|p| (p.id, p.ai_level)).collect();
+    for (pid, l) in all {
+        let m = level_message(pid, l);
+        w.send(m);
+    }
+}
+
+/// A player's game heard a level (true if it was one).
+pub fn client_message(w: &mut World, msg: &str) -> bool {
+    let Some(rest) = msg.strip_prefix(LEVEL_PREFIX) else { return false };
+    let mut it = rest.split_whitespace();
+    if let (Some(Ok(pid)), Some(Ok(l))) = (it.next().map(|v| v.parse::<Pid>()), it.next().map(|v| v.parse::<u8>())) {
+        if let Some(p) = w.players.get_mut(&pid) {
+            p.ai_level = AiLevel::from_index(l);
+        }
+    }
+    true
+}
+
+/// The strategy of the moment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// gather, make more workers, wall up
+    #[default]
+    Build,
+    /// strong enough: go and take igloos
+    Attack,
+    /// enemies at home: everybody back, more snowballers
+    Defend,
 }
 
 impl Ai {
@@ -125,6 +278,10 @@ fn spite(ai: &mut Ai, name: &str) -> i32 {
 }
 
 fn offensive_attack_region(w: &World, ai: &Ai) -> i32 {
+    // (the strategy: no new attacks while building up or defending)
+    if ai.mode != Mode::Attack {
+        return -30;
+    }
     if (ai.units.len() as i32) - (ai.attacking.len() as i32) < 4 {
         return -10;
     }
@@ -195,7 +352,7 @@ fn attack(w: &mut World, ai: &mut Ai, ri: usize) {
         if selected.len() >= max {
             break;
         }
-        if !ai.attacking.contains(&u) && w.units[u].warmth > 4 {
+        if !ai.attacking.contains(&u) && !ai.defenders.contains(&u) && !ai.runners.contains_key(&u) && w.units[u].warmth > 4 {
             selected.push(u);
         }
     }
@@ -294,6 +451,16 @@ fn diplomacy(w: &mut World, ai: &mut Ai) {
 /// One AI turn (every 3 seconds).
 pub fn run(w: &mut World, pid: Pid) {
     let Some(mut ai) = take(w, pid) else { return };
+    // (each thinks at its own pace)
+    let now = w.now();
+    if (now.wrapping_sub(ai.next_think) as i32) < 0 {
+        put(w, pid, ai);
+        return;
+    }
+    let level = level_of(w, Some(pid));
+    ai.next_think = now.wrapping_add(level.think_ms());
+    refresh_units(w, &mut ai);
+    choose_mode(w, &mut ai, level);
     for m in std::mem::take(&mut ai.send_msgs) {
         w.player_send_msg(pid, &m);
     }
@@ -436,5 +603,319 @@ pub fn run(w: &mut World, pid: Pid) {
             }
         }
     }
+    defend(w, &mut ai, level);
+    if level != AiLevel::Easy {
+        powerups(w, &mut ai, level);
+        switch_classes(w, &mut ai, level);
+        walls(w, &mut ai, level);
+    }
     put(w, pid, ai);
+}
+
+// -- the smarts ----------------------------------------------------------------------
+
+/// Its penguins as they are now (classes change, igloos are won and lost).
+fn refresh_units(w: &mut World, ai: &mut Ai) {
+    let pid = ai.pid;
+    let mut snow = BTreeSet::new();
+    let mut workers = Vec::new();
+    for ui in 0..w.units.len() {
+        if w.igloo_player(ui) != Some(pid) {
+            continue;
+        }
+        if w.units[ui].kind == UnitKind::Snowballer {
+            snow.insert(ui);
+        } else {
+            workers.push(ui);
+        }
+    }
+    ai.attacking.retain(|u| snow.contains(u));
+    ai.guarding.retain(|u| snow.contains(u));
+    ai.defenders.retain(|u| snow.contains(u));
+    ai.runners.retain(|u, _| snow.contains(u));
+    ai.units = snow.difference(&ai.guarding).copied().collect();
+    // new workers (a class change) go gathering
+    let gather = w.ai_cfg.gather.unwrap_or(ResKind::Fish);
+    for &wk in &workers {
+        if !ai.workers.contains(&wk) && w.units[wk].going_for.is_none() && w.units[wk].build_wall.is_none() {
+            w.units[wk].going_for = Some(gather);
+        }
+    }
+    ai.workers = workers;
+}
+
+fn warm_snowballers(w: &World, p: Pid) -> usize {
+    (0..w.units.len()).filter(|&u| w.igloo_player(u) == Some(p) && w.units[u].kind == UnitKind::Snowballer && w.units[u].warmth >= 5).count()
+}
+
+/// My igloos.
+fn my_igloos(w: &World, pid: Pid) -> Vec<usize> {
+    (0..w.buildings.len()).filter(|&b| w.buildings[b].player == Some(pid)).collect()
+}
+
+/// Enemy snowballers (warm) within `r` tiles of an igloo.
+fn threat_at(w: &World, pid: Pid, b: usize, r: i32) -> usize {
+    let (bx, by) = (w.buildings[b].x + 1, w.buildings[b].y + 1);
+    (0..w.units.len())
+        .filter(|&u| {
+            let un = &w.units[u];
+            un.kind == UnitKind::Snowballer && un.warmth >= 5 && (un.x - bx).abs().max((un.y - by).abs()) <= r && !alliance::friendly(w, w.igloo_player(u), Some(pid))
+        })
+        .count()
+}
+
+/// Build up, attack or defend: by how strong it is against its enemies
+/// and what is happening at home.
+fn choose_mode(w: &mut World, ai: &mut Ai, level: AiLevel) {
+    let pid = ai.pid;
+    let mine = warm_snowballers(w, pid) as f64;
+    let strongest = w.players.keys().copied().filter(|&p| p != pid && alliance::alive(w, p) && !alliance::friendly(w, Some(p), Some(pid))).map(|p| warm_snowballers(w, p)).max().unwrap_or(0) as f64;
+    let home = my_igloos(w, pid);
+    let threatened = home.iter().any(|&b| w.buildings[b].jeopardy || threat_at(w, pid, b, 10) >= 3);
+    let still_threat = home.iter().any(|&b| w.buildings[b].jeopardy || threat_at(w, pid, b, 12) >= 1);
+    // (a strategy holds a while, and attacks go on until clearly too weak)
+    let now = w.now();
+    let settled = now.wrapping_sub(ai.mode_since) >= 15_000;
+    let strong = mine >= 5.0 && mine >= strongest * level.attack_ratio();
+    let still_strong = mine >= 4.0 && mine >= strongest * level.attack_ratio() * 0.75;
+    let mode = if threatened || (ai.mode == Mode::Defend && still_threat) {
+        Mode::Defend
+    } else if !settled {
+        ai.mode
+    } else if strong || (ai.mode == Mode::Attack && still_strong) {
+        Mode::Attack
+    } else {
+        Mode::Build
+    };
+    if mode != ai.mode {
+        ai.mode_since = now;
+        if crate::unit::throw_log() {
+            println!("AI {} ({}) {:?} -> {:?} (mine {}, strongest {})", w.player_name(pid), level.label(), ai.mode, mode, mine, strongest);
+        }
+        ai.mode = mode;
+    }
+}
+
+/// Enemies at home: send snowballers back (into the igloo if it is being
+/// taken: that stops the takeover), more on harder levels.
+fn defend(w: &mut World, ai: &mut Ai, level: AiLevel) {
+    let pid = ai.pid;
+    // defenders whose igloo is safe again go back to what they did
+    let safe: Vec<usize> = ai.defenders.iter().copied().filter(|&u| {
+        let b = w.units[u].igloo;
+        !w.buildings[b].jeopardy && threat_at(w, pid, b, 10) == 0
+    }).collect();
+    for u in safe {
+        ai.defenders.remove(&u);
+        w.units[u].target_pos = None;
+    }
+    if ai.mode != Mode::Defend {
+        return;
+    }
+    let per_igloo = match level {
+        AiLevel::Easy => 2,
+        AiLevel::Normal => 4,
+        AiLevel::Hard => 7,
+    };
+    for b in my_igloos(w, pid) {
+        let jeopardy = w.buildings[b].jeopardy;
+        let threat = threat_at(w, pid, b, 10);
+        if !jeopardy && threat < 3 {
+            continue;
+        }
+        let door = (w.buildings[b].x, w.buildings[b].y);
+        let have = ai.defenders.iter().filter(|&&u| w.units[u].igloo == b).count();
+        let want = per_igloo.min(threat + 2).saturating_sub(have);
+        // the nearest warm snowballers (attackers far away too on Normal / Hard)
+        let mut cands: Vec<(i32, usize)> = ai
+            .units
+            .iter()
+            .copied()
+            .filter(|u| !ai.defenders.contains(u) && w.units[*u].warmth >= 4)
+            .filter(|u| level == AiLevel::Hard || !ai.attacking.contains(u) || jeopardy)
+            .map(|u| ((w.units[u].x - door.0).abs().max((w.units[u].y - door.1).abs()), u))
+            .collect();
+        cands.sort();
+        for (_, u) in cands.into_iter().take(want) {
+            ai.attacking.remove(&u);
+            ai.runners.remove(&u);
+            ai.defenders.insert(u);
+            let un = &mut w.units[u];
+            un.last_tiles.clear();
+            if jeopardy {
+                un.target_pos = None;
+                un.set_go_to_building(Some(b));
+            } else {
+                un.set_go_to_building(None);
+                un.target_pos = Some((door.0 + 1, door.1 + 2));
+                un.stray_range = 3;
+            }
+        }
+    }
+}
+
+/// Send a snowballer for a power-up lying near (one each).
+fn powerups(w: &mut World, ai: &mut Ai, level: AiLevel) {
+    // runners that got it (or it is gone)
+    let lying = crate::plugins::powerups_on_ground(w);
+    let done: Vec<usize> = ai.runners.iter().filter(|(&u, p)| !lying.contains(p) || crate::plugins::power_of(w, u).is_some()).map(|(&u, _)| u).collect();
+    for u in done {
+        if let Some(p) = ai.runners.remove(&u) {
+            if w.units[u].target_pos == Some(p) {
+                w.units[u].target_pos = None;
+            }
+        }
+    }
+    if ai.mode == Mode::Defend {
+        return;
+    }
+    let reach = if level == AiLevel::Hard { 22 } else { 13 };
+    for p in lying {
+        if ai.runners.values().any(|&q| q == p) {
+            continue;
+        }
+        let best = ai
+            .units
+            .iter()
+            .copied()
+            .filter(|u| !ai.runners.contains_key(u) && !ai.defenders.contains(u) && w.units[*u].warmth >= 5 && crate::plugins::power_of(w, *u).is_none())
+            .filter(|u| !matches!(w.units[*u].state, State::InBuilding | State::Entering | State::Frozen))
+            .map(|u| ((w.units[u].x - p.0).abs().max((w.units[u].y - p.1).abs()), u))
+            .filter(|&(d, _)| d <= reach)
+            .min();
+        if let Some((_, u)) = best {
+            ai.attacking.remove(&u);
+            ai.runners.insert(u, p);
+            let un = &mut w.units[u];
+            un.set_go_to_building(None);
+            un.target_pos = Some(p);
+            un.stray_range = 0;
+            un.last_tiles.clear();
+        }
+    }
+}
+
+/// Keep the mix of snowballers and workers fitting the strategy (a fish
+/// a change, like a player's).
+fn switch_classes(w: &mut World, ai: &mut Ai, level: AiLevel) {
+    let now = w.now();
+    if (now.wrapping_sub(ai.next_switch) as i32) < 0 {
+        return;
+    }
+    let snow = ai.units.len() + ai.guarding.len();
+    let total = snow + ai.workers.len();
+    if total < 4 {
+        return;
+    }
+    let gather_map = w.ai_cfg.gather.is_some();
+    let want = match ai.mode {
+        Mode::Defend => 0.75,
+        Mode::Attack => 0.7,
+        Mode::Build => if gather_map { 0.4 } else { 0.5 },
+    };
+    let share = snow as f64 / total as f64;
+    let n = if level == AiLevel::Hard { 2 } else { 1 };
+    let pid = ai.pid;
+    let mut ids: Vec<usize> = Vec::new();
+    if share < want - 0.12 {
+        // more snowballers: workers not carrying anything, near home
+        ids = ai.workers.iter().copied().filter(|&u| w.units[u].holding.is_none() && w.units[u].build_wall.is_none() && w.units[u].warmth >= 3).take(n).collect();
+    } else if share > want + 0.15 && ai.mode == Mode::Build {
+        ids = ai
+            .units
+            .iter()
+            .copied()
+            .filter(|u| !ai.attacking.contains(u) && !ai.defenders.contains(u) && !ai.runners.contains_key(u) && crate::plugins::power_of(w, *u).is_none() && w.units[*u].warmth >= 3)
+            .take(n)
+            .collect();
+    }
+    if ids.is_empty() {
+        return;
+    }
+    let (sent, _poor) = crate::unit::order_switch(w, Some(pid), &ids);
+    if sent > 0 {
+        ai.next_switch = now.wrapping_add(if level == AiLevel::Hard { 8000 } else { 20_000 });
+        if crate::unit::throw_log() {
+            println!("AI {} switches {} penguins ({:?}, share {:.2} want {:.2})", w.player_name(pid), sent, ai.mode, share, want);
+        }
+    }
+}
+
+/// A wall section between home and the nearest enemy (Normal: one, Hard:
+/// up to three, and ice when there is crystal to spare).
+fn walls(w: &mut World, ai: &mut Ai, level: AiLevel) {
+    let now = w.now();
+    let pid = ai.pid;
+    let max = if level == AiLevel::Hard { 3 } else { 1 };
+    // (Hard: ice on its finished sections, when not racing for crystal)
+    if level == AiLevel::Hard && w.ai_cfg.gather != Some(ResKind::Crystal) && crate::wall::crystal_of(w, pid) >= 2 {
+        let mine: Vec<(i32, i32)> = w.walls.iter().filter(|s| s.alive && s.owner == Some(pid) && s.built() && !s.ice && s.upgrade.is_none()).map(|s| (s.x, s.y)).collect();
+        if let Some(&t) = mine.first() {
+            let walls = crate::wall::upgradable(w, Some(pid), &[t]);
+            let workers: Vec<usize> = ai.workers.iter().copied().filter(|&u| w.units[u].holding.is_none()).take(2).collect();
+            if !walls.is_empty() && !workers.is_empty() {
+                crate::wall::upgrade(w, Some(pid), &walls, &workers);
+            }
+        }
+    }
+    if ai.walls_planned >= max || (now.wrapping_sub(ai.next_wall) as i32) < 0 || ai.mode == Mode::Attack {
+        return;
+    }
+    // (not in the first minute)
+    if now.wrapping_sub(w.started_at) < 60_000 {
+        return;
+    }
+    let home = my_igloos(w, pid);
+    let Some(&b) = home.first() else { return };
+    let door = (w.buildings[b].x + 1, w.buildings[b].y + 1);
+    // facing the nearest enemy igloo first, then the next nearest, ...
+    let mut enemies: Vec<usize> = (0..w.buildings.len()).filter(|&e| w.buildings[e].player.is_some() && !alliance::friendly(w, w.buildings[e].player, Some(pid))).collect();
+    enemies.sort_by_key(|&e| (w.buildings[e].x - door.0).abs() + (w.buildings[e].y - door.1).abs());
+    let Some(&enemy) = enemies.get(ai.walls_planned as usize % enemies.len().max(1)) else { return };
+    let (dx, dy) = (w.buildings[enemy].x - door.0, w.buildings[enemy].y - door.1);
+    let (ax, ay) = (dx.abs() as f64, dy.abs() as f64);
+    // the way to the enemy, in 8 directions; the wall lies across it
+    let dir = if ax > 2.0 * ay { (dx.signum(), 0) } else if ay > 2.0 * ax { (0, dy.signum()) } else { (dx.signum(), dy.signum()) };
+    let rot = match dir {
+        (_, 0) => 2,
+        (0, _) => 0,
+        (a, b) if a == b => 3,
+        _ => 1,
+    };
+    let workers: Vec<usize> = {
+        let mut v: Vec<(i32, usize)> = ai
+            .workers
+            .iter()
+            .copied()
+            .filter(|&u| w.units[u].build_wall.is_none() && w.units[u].warmth >= 4 && !matches!(w.units[u].state, State::InBuilding | State::Entering | State::Frozen))
+            .map(|u| ((w.units[u].x - door.0).abs().max((w.units[u].y - door.1).abs()), u))
+            .collect();
+        v.sort();
+        v.into_iter().take(if level == AiLevel::Hard { 4 } else { 3 }).map(|x| x.1).collect()
+    };
+    if workers.is_empty() {
+        return;
+    }
+    for dist in [7, 8, 9, 6, 10] {
+        for side in [0, 1, -1, 2, -2] {
+            let perp = (-dir.1, dir.0);
+            let c = (door.0 + dir.0 * dist + perp.0 * side, door.1 + dir.1 * dist + perp.1 * side);
+            let tiles = crate::wall::piece_tiles(c, rot);
+            // (not right next to a wall of its own: a new side)
+            let near_own = w.walls.iter().any(|s| s.alive && s.owner == Some(pid) && (s.x - c.0).abs().max((s.y - c.1).abs()) <= 4);
+            if !near_own && tiles.iter().all(|&(x, y)| crate::wall::can_place(w, x, y)) {
+                let n = crate::wall::plan(w, Some(pid), tiles[0], tiles[tiles.len() - 1], &workers);
+                if n > 0 {
+                    ai.walls_planned += 1;
+                    ai.next_wall = now.wrapping_add(if level == AiLevel::Hard { 45_000 } else { 90_000 });
+                    if crate::unit::throw_log() {
+                        println!("AI {} plans a wall at {:?} ({} workers)", w.player_name(pid), c, workers.len());
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    // (nowhere to put it: try again later)
+    ai.next_wall = now.wrapping_add(30_000);
 }

@@ -31,6 +31,12 @@ pub fn set_levels(master: u8, music: u8) {
     MUSIC.store(music.min(100) as u32, Ordering::Relaxed);
 }
 
+/// The master slider's loudness factor (squared, like the others).
+pub fn master() -> f32 {
+    let m = MASTER.load(Ordering::Relaxed) as f32 / 100.0;
+    m * m
+}
+
 /// The music's loudness factor.  The sliders are squared, so that 50%
 /// sounds about half as loud rather than barely quieter.
 fn music_gain() -> f32 {

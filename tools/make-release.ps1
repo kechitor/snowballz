@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force (Join-Path $out 'licenses') | Out-Null
 
 Copy-Item 'target\release\snowballz.exe' $out
 Copy-Item -Recurse 'data', 'maps', 'plugins' $out
-Copy-Item 'icon.png', 'README.md', 'LICENSE' $out
+Copy-Item 'icon.png', 'wallpaper.png', 'README.md', 'LICENSE' $out
 Copy-Item 'tools\licenses\SDL2.txt' (Join-Path $out 'licenses')
 (Get-Content 'tools\release\PLAY-windows.txt') -replace '@VERSION@', $version |
     Set-Content (Join-Path $out 'PLAY.txt')

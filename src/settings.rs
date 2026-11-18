@@ -126,7 +126,7 @@ pub fn set_loadout(map: &str, snowballers: u16) {
     save();
 }
 
-/// A sound level in percent: "volume" (everything) or "music".  100 if
+/// A sound level in percent: "volume" (everything), "music" or "effects".  100 if
 /// it was never set.
 pub fn sound_level(key: &str) -> u8 {
     with(|c| c.get("sound", key).and_then(|v| v.trim().parse::<u32>().ok()).map(|v| v.min(100) as u8).unwrap_or(100))

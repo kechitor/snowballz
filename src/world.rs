@@ -377,6 +377,8 @@ pub struct Player {
     /// how many of the starting penguins should be snowballers (the rest
     /// are workers); None keeps the map's mix
     pub loadout: Option<u16>,
+    /// (computer players) how well it plays
+    pub ai_level: crate::ai::AiLevel,
 }
 
 impl Player {
@@ -397,6 +399,7 @@ impl Player {
             victory: None,
             ai: Ai::new(id),
             loadout: None,
+            ai_level: crate::ai::AiLevel::Normal,
         }
     }
 
@@ -632,7 +635,9 @@ pub struct World {
     pub selected: BTreeSet<usize>,
     pub select_box_start: Option<(f64, f64)>,
     pub select_box_end: Option<(f64, f64)>,
+    /// The minimap shows (Space hides it), and the mouse is dragging on it.
     pub draw_minimap: bool,
+    pub minimap_drag: bool,
     pub show_fps: bool,
     pub view: View,
     pub messages: Vec<Message>,
@@ -681,6 +686,8 @@ pub struct World {
     /// at the end), when the match started (game time) and how long it ran
     /// (as the host says).
     pub stats: BTreeMap<Pid, crate::stats::Stats>,
+    /// Alerts and the sounds of the fight (see `alerts`).
+    pub watch: crate::alerts::Watch,
     pub started_at: u32,
     pub match_ms: Option<u32>,
     pub wall_mode: Option<crate::wall::WallMode>,
@@ -762,7 +769,8 @@ impl World {
             selected: BTreeSet::new(),
             select_box_start: None,
             select_box_end: None,
-            draw_minimap: false,
+            draw_minimap: true,
+            minimap_drag: false,
             show_fps: false,
             view,
             messages: Vec::new(),
@@ -801,6 +809,7 @@ impl World {
             walls: Vec::new(),
             wall_version: 0,
             stats: BTreeMap::new(),
+            watch: Default::default(),
             started_at: 0,
             match_ms: None,
             wall_mode: None,

@@ -156,6 +156,13 @@ fn ally_action(w: &mut World, a: hud::AllyAction) {
         hud::AllyAction::Offer(p) => crate::alliance::request_offer(w, p),
         hud::AllyAction::Accept(p) => crate::alliance::request_answer(w, p, true),
         hud::AllyAction::Reject(p) => crate::alliance::request_answer(w, p, false),
+        hud::AllyAction::Level(p) => {
+            let next = w.players.get(&p).map(|pl| pl.ai_level.next());
+            if let Some(l) = next {
+                crate::ai::set_level(w, p, l);
+                w.notice(&format!("{} now plays at {}", w.player_name(p), l.label()));
+            }
+        }
         hud::AllyAction::Nothing => {}
     }
 }
@@ -627,7 +634,7 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                         s.game_menu = Some(crate::game_menu::GameMenu::new(title, note));
                         w.select_box_start = None;
                         w.holding_mouse = false;
-                        w.draw_minimap = false;
+                        w.minimap_drag = false;
                         if s.single {
                             clock::set_paused(true);
                         }
@@ -637,7 +644,10 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                         menu::toggle_fullscreen();
                     }
                     sdl::K_HOME => look_at_home(w),
-                    sdl::K_SPACE => w.draw_minimap = true,
+                    sdl::K_J => {
+                        crate::alerts::jump(w);
+                    }
+                    sdl::K_SPACE => w.draw_minimap = !w.draw_minimap,
                     sdl::K_O => disban_units(w),
                     sdl::K_X if !w.selected.is_empty() => switch_class(w),
                     sdl::K_B => wall_mode(w, WallMode::Build),
@@ -665,16 +675,32 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                 }
             }
             sdl::TEXTINPUT => chat_text(w, &e.text()),
-            sdl::KEYUP => {
-                if e.key_sym() == sdl::K_SPACE {
-                    w.draw_minimap = false;
+            sdl::MOUSEBUTTONDOWN if s.minimap.contains(w, gfx::mouse_pos()) => {
+                // the minimap: left click / drag moves the view, right
+                // click sends the selected penguins there
+                if let Some((tx, ty)) = s.minimap.tile_at(w, gfx::mouse_pos()) {
+                    match e.button() {
+                        1 => {
+                            look_at(w, tx * 32.0, ty * 32.0);
+                            w.minimap_drag = true;
+                        }
+                        3 if !w.selected.is_empty() => {
+                            let (x, y) = (tx.floor() as i32, ty.floor() as i32);
+                            let e = w.elevation(x, y) * crate::world::ELEV_MULT;
+                            let p = ((x * 32 + 16) as f64 - w.view.x, (y * 32 + 16) as f64 - w.view.y - e);
+                            set_job(w, p, false);
+                        }
+                        _ => {}
+                    }
                 }
             }
             sdl::MOUSEBUTTONDOWN => {
                 let pos = gfx::mouse_pos();
-                let squad = if e.button() == 1 && !w.draw_minimap { hud::squad_at(w, pos) } else { None };
-                let ally = if !w.draw_minimap { hud::ally_click(w, pos) } else { None };
-                if let Some(a) = ally {
+                let squad = if e.button() == 1 { hud::squad_at(w, pos) } else { None };
+                let ally = hud::ally_click(w, pos);
+                if e.button() == 1 && hud::alert_at(w, pos) {
+                    crate::alerts::jump(w);
+                } else if let Some(a) = ally {
                     if e.button() == 1 {
                         ally_action(w, a);
                     }
@@ -682,7 +708,7 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                     tap_squad(w, n);
                 } else if !hud::in_panel(w, pos) {
                     let p = scaled_mouse(w);
-                    if !w.draw_minimap && w.wall_mode.is_some() {
+                    if w.wall_mode.is_some() {
                         // planning a wall: click to put the piece down (or to
                         // turn a section into ice); right click: take down one
                         // of my sections (in build mode), or stop
@@ -698,7 +724,7 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                                 w.wall_mode = None;
                             }
                         }
-                    } else if !w.draw_minimap {
+                    } else {
                         match e.button() {
                             1 => {
                                 // clicking a frozen penguin keeps its thaw countdown shown
@@ -727,6 +753,7 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                     end_select(w);
                 }
                 w.holding_mouse = false;
+                w.minimap_drag = false;
             }
             _ => {}
         }
@@ -747,12 +774,12 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
         change_zoom(w, if page_up { 0.02 } else { -0.02 }, Some(c));
     }
     scroll_screen(w, gfx::mouse_pos(), dt);
-    if w.draw_minimap && w.holding_mouse {
+    if w.minimap_drag {
+        // (dragging on the minimap; off its edge it stops at the edge)
         let (mx, my) = gfx::mouse_pos();
-        let (x, y) = s.minimap.pos_to_mappos(w, mx as f64, my as f64);
-        w.view.x = x;
-        w.view.y = y;
-        bind_screen(w);
+        if let Some((tx, ty)) = s.minimap.tile_at(w, (mx, my)) {
+            look_at(w, tx * 32.0, ty * 32.0);
+        }
     }
     if w.select_box_start.is_some() {
         let (x, y) = scaled_mouse(w);

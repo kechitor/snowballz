@@ -315,6 +315,7 @@ pub const K_S: i32 = 115;
 pub const K_V: i32 = 118;
 pub const K_X: i32 = 120;
 pub const K_N: i32 = 110;
+pub const K_J: i32 = 106;
 pub const K_P: i32 = 112;
 pub const K_R: i32 = 114;
 pub const K_Y: i32 = 121;

@@ -363,9 +363,9 @@ fn stray(w: &mut World, ui: usize) -> Step {
     if w.buildings[ig].player.is_none() {
         return stray_at_igloo(w, ui, false);
     }
-    if kind == UnitKind::Snowballer && w.buildings[ig].jeopardy {
-        w.units[ui].set_go_to_building(Some(ig));
-    }
+    // (an igloo being taken no longer calls every snowballer home: the
+    // player gets an alert and decides; the computer players send
+    // defenders themselves)
     if let Some(b) = w.units[ui].go_to_building() {
         if (x, y) == (w.buildings[b].x, w.buildings[b].y) {
             if igloo::can_enter(w, b, ui) {

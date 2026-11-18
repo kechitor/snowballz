@@ -33,7 +33,7 @@ mkdir -p dist
 # game files shared by every package: $1 = destination folder
 copy_game_files() {
     cp -R data maps plugins "$1/"
-    cp icon.png README.md LICENSE "$1/"
+    cp icon.png wallpaper.png README.md LICENSE "$1/"
     mkdir -p "$1/licenses"
     cp tools/licenses/SDL2.txt "$1/licenses/"
 }

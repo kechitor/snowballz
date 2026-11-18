@@ -164,7 +164,10 @@ pub fn settings_panel(in_game: bool) -> Panel {
     option_row(&mut panel, "smoke", &["0", "1"], "Smoke", &["Off", "On"]);
     option_row(&mut panel, "footprints", &["0", "1"], "Footprints", &["Off", "On"]);
     option_row(&mut panel, "snowballdetail", &["1", "2", "3"], "Snowball detail", &["Low", "Medium", "High"]);
-    for (key, label) in [("volume", "Volume:"), ("music", "Music:")] {
+    if !in_game {
+        option_row(&mut panel, "ailevel", &["0", "1", "2"], "Computer players", &["Easy", "Normal", "Hard"]);
+    }
+    for (key, label) in [("volume", "Volume:"), ("music", "Music:"), ("effects", "Sound effects:")] {
         let mut l = Label::new(label, 16, 0, 0);
         l.min_width = 180;
         l.set_text(label);
@@ -207,6 +210,7 @@ pub fn apply_setting(a: &Action) -> bool {
             let (mut volume, mut music) = (settings::sound_level("volume"), settings::sound_level("music"));
             match key.as_str() {
                 "volume" => volume = *value,
+                "effects" => crate::sfx::set_level(*value),
                 _ => music = *value,
             }
             crate::audio::set_levels(volume, music);

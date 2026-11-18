@@ -68,7 +68,9 @@ impl Snowball {
         let d = ((((tx - px) * (tx - px) + (ty - py) * (ty - py)) as f64).sqrt()).floor();
         // further away a throw is on target this often (more from higher
         // ground); otherwise it lands on a tile next to the target
-        let on_target = ON_TARGET + (1.0 - ON_TARGET) * lift / unit::HEIGHT_BONUS_MAX * HIGH_AIM_MAX;
+        // (computer players: by their level)
+        let level = crate::ai::level_of(w, w.igloo_player(ui)).aim();
+        let on_target = ((ON_TARGET + (1.0 - ON_TARGET) * lift / unit::HEIGHT_BONUS_MAX * HIGH_AIM_MAX) * level).min(0.95);
         let steady = w.rng.random() < on_target;
         let (mut ex, mut ey) = if sharp || d <= sure || steady {
             (tx, ty)
@@ -272,6 +274,7 @@ pub fn move_snowball(w: &mut World, i: usize) -> bool {
         hit = 0;
     } else {
         let (tx, ty) = (w.tiles[end_tile].x, w.tiles[end_tile].y);
+        let mut mine_hit = false;
         for u in w.units_around(tx, ty) {
             if w.units[u].warmth > 0 && w.units[u].state != State::InBuilding {
                 let v = unit::detect_hit(w, u, end_tile, start_tile, penguin);
@@ -281,8 +284,12 @@ pub fn move_snowball(w: &mut World, i: usize) -> bool {
                 if v == 2 {
                     hit = 2;
                 }
+                if v > 0 && w.me.is_some() && w.igloo_player(u) == w.me && penguin.is_none_or(|p| w.igloo_player(p) != w.me) {
+                    mine_hit = true;
+                }
             }
         }
+        crate::alerts::snowball_landed(w, tx, ty, mine_hit);
     }
     if let (Some(p), Some(_)) = (penguin, target) {
         if unit::throw_log() {

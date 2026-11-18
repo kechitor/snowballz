@@ -641,6 +641,7 @@ impl Game {
         if self.is_server() {
             apply_loadouts(self.world.as_mut().unwrap());
             add_map_players(self.world.as_mut().unwrap());
+            crate::ai::send_levels(self.world.as_mut().unwrap());
         }
         {
             let w = self.world.as_mut().unwrap();
@@ -868,7 +869,8 @@ impl Game {
         crate::plugins::tick(w);
         crate::alliance::tick(w);
         crate::wall::tick(w);
-        if now > s.last_ai_tick.wrapping_add(3000) {
+        // (each computer player thinks at its level's pace: see ai::run)
+        if now > s.last_ai_tick.wrapping_add(250) {
             s.last_ai_tick = now;
             let ids: Vec<Pid> = w.players.values().filter(|p| p.kind == PlayerKind::Ai).map(|p| p.id).collect();
             for p in ids {
@@ -1160,7 +1162,9 @@ pub fn add_map_players(w: &mut World) {
         let id = new_player_id(w);
         let name = format!("ai{}", w.players.len());
         let color = w.regions[ri].color;
-        w.players.insert(id, Player::new(id, &name, PlayerKind::Ai, color));
+        let mut pl = Player::new(id, &name, PlayerKind::Ai, color);
+        pl.ai_level = ai::default_level();
+        w.players.insert(id, pl);
         w.send(Msg::NewPlayer { player_id: id, name, color, loading: false });
         w.set_region_player(ri, Some(id));
         // each AI its own mix of snowballers and workers (from a quarter
@@ -1267,6 +1271,7 @@ fn server_message(w: &mut World, m: Msg, c: ConnId) {
             }
             crate::alliance::send_state_to(w, c);
             crate::wall::send_state_to(w, c);
+            crate::ai::send_levels_to(w, c);
             // joining a match that already runs: straight into the game
             // (the Python version left such players waiting in the lobby)
             if w.started {

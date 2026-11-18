@@ -167,6 +167,11 @@ pub fn power_of(w: &World, ui: usize) -> Option<PowerKind> {
     pp.held.get(&ui).map(|&pi| pp.powerups[pi].kind)
 }
 
+/// Where power-ups lie on the map (to be picked up).
+pub fn powerups_on_ground(w: &World) -> Vec<(i32, i32)> {
+    w.plugins.powerup.as_ref().map(|pp| pp.unheld.keys().copied().collect()).unwrap_or_default()
+}
+
 /// How far this penguin throws, in tiles (the same in every direction).
 pub fn throw_range(w: &World, ui: usize) -> f64 {
     if power_of(w, ui) == Some(PowerKind::Range) {
@@ -381,7 +386,7 @@ pub fn timer_message(w: &mut World, msg: &str, from_id: u16) -> bool {
     if from_id != TIMER_FROM {
         return false;
     }
-    if crate::alliance::client_message(w, msg) || crate::wall::client_message(w, msg) || crate::stats::client_message(w, msg) {
+    if crate::alliance::client_message(w, msg) || crate::wall::client_message(w, msg) || crate::stats::client_message(w, msg) || crate::ai::client_message(w, msg) {
         return true;
     }
     if let Some(rest) = msg.strip_prefix(KIND_PREFIX) {

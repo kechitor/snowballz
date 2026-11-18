@@ -140,6 +140,10 @@ Start and end of a match
 Every match starts with a 3, 2, 1, Go! countdown: nobody moves until "Go!",
 but you can look around and give orders already.
 
+Every player gets a random team colour at the start of each match (red, blue,
+green, yellow, purple, orange, cyan, pink, brown, lime, navy or olive), so the
+colours no longer depend on the map or the igloo you start in.
+
 After the match, the winner / loser screen lists every player's numbers:
 enemy penguins their snowballs froze, their own penguins frozen, snowballs
 thrown and the share that were direct hits, loads of fish and crystal
@@ -160,7 +164,10 @@ drops in the snow.
   always find their target.
 * **Defense** (blue shield): 4 more warmth, near misses don't hurt, direct
   hits take 1 warmth instead of 3, and it warms up by itself outside the
-  igloo (1 warmth every 5 seconds).
+  igloo (1 warmth every 15 seconds).
+
+Each drop picks every power-up's kind at random, so each of the three is
+equally likely: a 1 in 3 chance each.
 
 Alliances
 ---------
@@ -260,7 +267,7 @@ Controls
 | Input | Action |
 |-------|--------|
 | left drag | select penguins |
-| right click | send the selected penguins there (workers: gather from a fish hole / crystal; any penguin: enter an igloo) |
+| right click | send the selected penguins there. What you click decides what they do: workers gather from a fish hole / crystal; snowballers chase an enemy penguin and throw at it until it is frozen; any penguin picks up a power-up or enters an igloo. Clicking on a penguin's or a crystal's picture counts, not only the tile under its feet |
 | middle click | same, running |
 | right click the same place twice | same, running: they go there without stopping to fight |
 | click a penguin type in the panel (bottom right) | keep only that type selected; the arrow disbands them |

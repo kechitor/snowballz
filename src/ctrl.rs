@@ -93,6 +93,56 @@ const ORDER_AGAIN_TILES: i32 = 2;
 
 /// Send the selected penguins somewhere (right click; middle click, or the
 /// same order twice, runs).
+/// The tile of the enemy penguin (snowballers selected) or the resource
+/// (workers selected) drawn at map pixel `p`, when the tile clicked has
+/// nothing of the kind itself.
+fn target_under(w: &World, p: (f64, f64), tile: (i32, i32)) -> Option<(i32, i32)> {
+    let me = w.me?;
+    let kinds: Vec<UnitKind> = w.selected.iter().map(|&u| w.units[u].kind).collect();
+    let t = crate::gfx::time();
+    if kinds.contains(&UnitKind::Snowballer) {
+        let enemy = |u: &Unit| {
+            let p = w.buildings[u.igloo].player;
+            p != Some(me) && !crate::alliance::allied(w, Some(me), p) && u.warmth > 0 && u.state != State::InBuilding
+        };
+        if w.units.iter().any(|u| (u.x, u.y) == tile && enemy(u)) {
+            return None;
+        }
+        let hit = w
+            .units
+            .iter()
+            .filter(|u| enemy(u))
+            .filter(|u| {
+                let (x, y) = u.sprite_xy(t);
+                p.0 >= x && p.0 < x + 32.0 && p.1 >= y && p.1 < y + 32.0
+            })
+            .max_by(|a, b| a.sprite_xy(t).1.partial_cmp(&b.sprite_xy(t).1).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(u) = hit {
+            return Some((u.x, u.y));
+        }
+    }
+    if kinds.contains(&UnitKind::Worker) {
+        let here = w.tile(tile.0, tile.1)?;
+        if here.building.is_some() || here.resource.is_some_and(|r| w.resources[r].kind.gatherable()) {
+            return None;
+        }
+        let hit = w
+            .resources
+            .iter()
+            .filter(|r| r.kind.gatherable() && r.quantity > 0)
+            .filter(|r| {
+                let tx = r.texture();
+                p.0 >= r.x && p.0 < r.x + tx.w as f64 && p.1 >= r.y && p.1 < r.y + tx.h as f64
+            })
+            .max_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(r) = hit {
+            let rt = &w.tiles[r.tile];
+            return Some((rt.x, rt.y));
+        }
+    }
+    None
+}
+
 fn set_job(w: &mut World, pos: (f64, f64), run_mode: bool) {
     if w.selected.is_empty() {
         return;
@@ -103,6 +153,13 @@ fn set_job(w: &mut World, pos: (f64, f64), run_mode: bool) {
     if wall::at(w, tile.0, tile.1).is_none() {
         if let Some(wi) = wall::pick(w, tile) {
             tile = (w.walls[wi].x, w.walls[wi].y);
+        }
+    }
+    // clicked on an enemy penguin's or a resource's picture (they stand up
+    // from the tile below): that tile is meant
+    if wall::at(w, tile.0, tile.1).is_none() {
+        if let Some(t) = target_under(w, (w.view.x + x, w.view.y + y), tile) {
+            tile = t;
         }
     }
     // the same penguins sent to the same place again: they go there

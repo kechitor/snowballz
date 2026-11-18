@@ -299,6 +299,8 @@ pub struct Unit {
     pub state: State,
     pub holding: Option<ResKind>,
     pub targeted_unit: Option<usize>,
+    /// the enemy penguin it was sent after (right-clicked)
+    pub hunt: Option<usize>,
     pub moving: bool,
     pub direction: (i32, i32),
     pub target_resource: Option<usize>,
@@ -1017,6 +1019,7 @@ impl World {
         unit.gathering_from = None;
         unit.build_wall = None;
         unit.wall_target = None;
+        unit.hunt = None;
     }
 
     fn new_unit(&mut self, kind: UnitKind, pos: (i32, i32), igloo: usize) {
@@ -1046,6 +1049,7 @@ impl World {
             state: State::InBuilding,
             holding: None,
             targeted_unit: None,
+            hunt: None,
             moving: false,
             direction: (0, -1),
             target_resource: None,

@@ -55,7 +55,7 @@ pub const ALL_POWERS: [PowerKind; 3] = [PowerKind::DoubleSnowball, PowerKind::Ra
 /// Extra (and most) warmth with the defense power-up.
 pub const DEFENSE_WARMTH: i32 = 4;
 /// ... and it warms its carrier up by itself: 1 warmth this often (ms).
-pub const DEFENSE_WARM_EVERY_MS: u32 = 5_000;
+pub const DEFENSE_WARM_EVERY_MS: u32 = 15_000;
 /// New power-ups are dropped this often (ms of game time).
 pub const DROP_EVERY_MS: u32 = 60_000;
 

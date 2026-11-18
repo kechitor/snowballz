@@ -619,6 +619,12 @@ impl Panel {
     }
 
     pub fn layout(&mut self) {
+        // (too tall to leave room for the buttons along the bottom: two
+        // columns instead)
+        if self.rows.len() > 6 && self.top + self.one_column_height() > Self::MAX_BOTTOM {
+            self.layout_two_columns();
+            return;
+        }
         let gap = 20;
         let width = self
             .rows
@@ -642,6 +648,74 @@ impl Panel {
                 x += e.rect().w + gap;
             }
             y += rh + self.spacing;
+        }
+    }
+
+    /// Panels end above this (design pixels): the bottom bar's buttons
+    /// start just under it.
+    const MAX_BOTTOM: i32 = 430;
+
+    fn one_column_height(&self) -> i32 {
+        self.rows.iter().map(|r| r.iter().map(|e| e.rect().h).max().unwrap_or(0)).sum::<i32>() + self.spacing * (self.rows.len() as i32 - 1) + 2 * self.padding
+    }
+
+    /// Rows of (label, control) in two columns, labels lined up.
+    fn layout_two_columns(&mut self) {
+        let gap = 12;
+        let col_gap = 24;
+        // (narrower: labels as long as their text, switches a bit slimmer)
+        for row in self.rows.iter_mut() {
+            for e in row.iter_mut() {
+                match e {
+                    Widget::Label(l) if l.min_width > 0 => {
+                        l.min_width = 0;
+                        let t = l.text.clone();
+                        l.set_text(&t);
+                    }
+                    Widget::Button(b) if b.switch.is_some() && b.min_width > 128 => {
+                        b.min_width = 128;
+                        let t = b.text.clone();
+                        b.set_text(&t);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let half = self.rows.len().div_ceil(2);
+        let cols: [std::ops::Range<usize>; 2] = [0..half, half..self.rows.len()];
+        let row_h = |r: &Vec<Widget>| r.iter().map(|e| e.rect().h).max().unwrap_or(0);
+        // each column: the widest first item (label) and the widest rest
+        let dims: Vec<(i32, i32, i32)> = cols
+            .iter()
+            .map(|c| {
+                let lw = self.rows[c.clone()].iter().map(|r| r.first().map(|e| e.rect().w).unwrap_or(0)).max().unwrap_or(0);
+                let rw = self.rows[c.clone()].iter().map(|r| r.iter().skip(1).map(|e| e.rect().w + gap).sum::<i32>() - if r.len() > 1 { gap } else { 0 }).max().unwrap_or(0);
+                let h = self.rows[c.clone()].iter().map(row_h).sum::<i32>() + self.spacing * (c.len() as i32 - 1).max(0);
+                (lw, rw, h)
+            })
+            .collect();
+        let col_w = |d: &(i32, i32, i32)| d.0 + gap + d.1;
+        let width = col_w(&dims[0]) + col_gap + col_w(&dims[1]) + 2 * self.padding;
+        let height = dims[0].2.max(dims[1].2) + 2 * self.padding;
+        let x0 = (640 - width) / 2;
+        // (in the middle of the room above the bottom bar)
+        let top = ((Self::MAX_BOTTOM - height) / 2).max(8);
+        self.rect = DRect { x: x0, y: top, w: width, h: height };
+        let mut cx = x0 + self.padding;
+        for (ci, c) in cols.iter().enumerate() {
+            let (lw, _, _) = dims[ci];
+            let mut y = top + self.padding;
+            for ri in c.clone() {
+                let rh = row_h(&self.rows[ri]);
+                let mut x = cx;
+                for (k, e) in self.rows[ri].iter_mut().enumerate() {
+                    let h = e.rect().h;
+                    e.set_pos(x, y + (rh - h) / 2);
+                    x += if k == 0 { lw + gap } else { e.rect().w + gap };
+                }
+                y += rh + self.spacing;
+            }
+            cx += col_w(&dims[ci]) + col_gap;
         }
     }
 

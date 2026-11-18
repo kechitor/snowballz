@@ -815,6 +815,12 @@ impl Game {
                 crate::path::test_hook(w, elapsed);
             }
         }
+        if std::env::var("SNOWBALLZ_HUNT_TEST").is_ok() && self.is_server() {
+            // test hook: my snowballers sent after the nearest enemy penguin
+            if let Some(w) = self.world.as_mut() {
+                crate::unit::hunt_test(w, elapsed);
+            }
+        }
         if self.hooks.give_power.is_some() && elapsed > 2000 && self.is_server() {
             // test hook: power-ups for my snowballers
             let kind = self.hooks.give_power.take().unwrap();
@@ -1102,6 +1108,32 @@ fn stats_line(w: &World) -> String {
     format!("mine: workers={} snowballers={} pending={} fish={} || me={} frozen={} inside={} cold={} snowballs={} held=[{}] dmos_shown={} | {} | powerups {}", my_workers, mine.len() - my_workers, my_pending, my_fish, me, frozen, inside, cold, w.snowballs.len(), held.join(" "), dmos, parts.join(" "), crate::plugins::summary(w))
 }
 
+/// Team colours: every player gets one of these at random (not the colour
+/// of their igloo's region in the map).
+const TEAM_COLORS: [[u8; 3]; 12] = [
+    [220, 40, 40],   // red
+    [40, 90, 230],   // blue
+    [40, 170, 60],   // green
+    [240, 200, 30],  // yellow
+    [150, 60, 200],  // purple
+    [250, 130, 20],  // orange
+    [30, 190, 200],  // cyan
+    [235, 90, 170],  // pink
+    [120, 70, 30],   // brown
+    [140, 220, 40],  // lime
+    [20, 40, 120],   // navy
+    [130, 130, 30],  // olive
+];
+
+/// A team colour nobody in the match has yet.
+fn random_team_color(w: &mut World, region_color: [u8; 3]) -> [u8; 3] {
+    let free: Vec<[u8; 3]> = TEAM_COLORS.iter().copied().filter(|c| !w.players.values().any(|p| p.color == *c)).collect();
+    if free.is_empty() {
+        return region_color;
+    }
+    free[w.rng.randint(0, free.len() as i32 - 1) as usize]
+}
+
 fn new_player_id(w: &World) -> Pid {
     let mut id = 1;
     while w.players.contains_key(&id) {
@@ -1124,12 +1156,13 @@ pub fn add_player(w: &mut World, name: &str, color: Option<[u8; 3]>) -> Option<P
             })?
         }
     };
-    let color = w.regions[ri].color;
     if let Some(old) = w.regions[ri].player {
         if !w.is_alive(old) {
             w.players.remove(&old);
         }
     }
+    let rc = w.regions[ri].color;
+    let color = random_team_color(w, rc);
     let id = new_player_id(w);
     let mut p = Player::new(id, name, PlayerKind::Human, color);
     p.loading = true;
@@ -1161,7 +1194,8 @@ pub fn add_map_players(w: &mut World) {
         }
         let id = new_player_id(w);
         let name = format!("ai{}", w.players.len());
-        let color = w.regions[ri].color;
+        let rc = w.regions[ri].color;
+        let color = random_team_color(w, rc);
         let mut pl = Player::new(id, &name, PlayerKind::Ai, color);
         pl.ai_level = ai::default_level();
         w.players.insert(id, pl);

@@ -549,6 +549,7 @@ pub fn set_job(w: &mut World, ui: usize, pos: (i32, i32), run_mode: bool, group_
     u.target_pos = None;
     u.build_wall = None;
     u.wall_target = None;
+    u.hunt = None;
     if u.state == State::Gathering {
         u.state = State::Stray;
     }
@@ -567,6 +568,17 @@ pub fn set_job(w: &mut World, ui: usize, pos: (i32, i32), run_mode: bool, group_
             return;
         }
     }
+    // an enemy penguin: snowballers go after it until it's frozen
+    if w.units[ui].kind == UnitKind::Snowballer {
+        if let Some(o) = (0..w.units.len()).find(|&o| (w.units[o].x, w.units[o].y) == pos && hunt_target_ok(w, ui, o)) {
+            let u = &mut w.units[ui];
+            u.hunt = Some(o);
+            u.run_mode = false;
+            u.target_pos = Some(pos);
+            u.stray_range = 1;
+            return;
+        }
+    }
     let t = &w.tiles[ti];
     let res = t.resource.filter(|&r| w.resources[r].kind.gatherable());
     if w.units[ui].kind == UnitKind::Worker && res.is_some() {
@@ -578,10 +590,78 @@ pub fn set_job(w: &mut World, ui: usize, pos: (i32, i32), run_mode: bool, group_
             w.units[ui].set_go_to_building(Some(b));
         }
     } else {
+        // (a power-up: right onto it; a tile nobody can stand on: next to it)
+        let powerup = crate::plugins::powerups_on_ground(w).contains(&pos);
+        let blocked = w.tiles[ti].resource.is_some() || crate::wall::solid(w, ti) || w.dmos.iter().any(|o| o.obstruction && o.position == pos);
         let u = &mut w.units[ui];
         u.target_pos = Some(pos);
-        u.stray_range = ((group_size / 2) as i32).clamp(0, 6);
+        u.stray_range = if powerup { 0 } else { ((group_size / 2) as i32).clamp(0, 6) };
+        if blocked {
+            u.stray_range = u.stray_range.max(1);
+        }
     }
+}
+
+/// Test hook (SNOWBALLZ_HUNT_TEST): my snowballers sent after the nearest
+/// enemy penguin, then how the chase goes.
+pub fn hunt_test(w: &mut World, elapsed: u32) {
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(3000);
+    static TARGET: AtomicUsize = AtomicUsize::new(usize::MAX);
+    if elapsed < NEXT.load(Ordering::Relaxed) {
+        return;
+    }
+    NEXT.store(elapsed + 3000, Ordering::Relaxed);
+    let me = w.me;
+    let mine: Vec<usize> = (0..w.units.len()).filter(|&u| w.igloo_player(u) == me && w.units[u].kind == UnitKind::Snowballer && w.units[u].state != State::InBuilding).collect();
+    let Some(&first) = mine.first() else { return };
+    let t = TARGET.load(Ordering::Relaxed);
+    if t == usize::MAX {
+        let at = (w.units[first].x, w.units[first].y);
+        let Some(o) = (0..w.units.len()).filter(|&o| hunt_target_ok(w, first, o)).min_by_key(|&o| (w.units[o].x - at.0).pow(2) + (w.units[o].y - at.1).pow(2)) else { return };
+        TARGET.store(o, Ordering::Relaxed);
+        let pos = (w.units[o].x, w.units[o].y);
+        for &u in &mine {
+            set_job(w, u, pos, false, mine.len());
+        }
+        println!("HUNTTEST {} snowballers sent after penguin {} at {:?} ({} tiles away)", mine.len(), o, pos, dist(pos, at).round());
+        return;
+    }
+    let o = &w.units[t];
+    let hunting = mine.iter().filter(|&&u| w.units[u].hunt == Some(t)).count();
+    let near = mine.iter().map(|&u| dist((w.units[u].x, w.units[u].y), (o.x, o.y))).fold(f64::MAX, f64::min);
+    let frozen = (0..w.units.len()).filter(|&u| w.igloo_player(u) == me && w.units[u].kind == UnitKind::Snowballer && w.units[u].state == State::Frozen).count();
+    println!("HUNTTEST t={} target warmth {} at {:?}, {} still hunting ({} of mine frozen), nearest {:.0} tiles", elapsed, o.warmth, (o.x, o.y), hunting, frozen, near);
+}
+
+/// Can `ui` go after `o`: an enemy penguin, not frozen, out in the open?
+fn hunt_target_ok(w: &World, ui: usize, o: usize) -> bool {
+    let Some(ou) = w.units.get(o) else { return false };
+    let mine = w.igloo_player(ui);
+    let theirs = w.igloo_player(o);
+    theirs != mine && !crate::alliance::allied(w, mine, theirs) && ou.warmth > 0 && !matches!(ou.state, State::InBuilding | State::Entering)
+}
+
+/// Chasing the penguin it was sent after: throw when in range, else keep
+/// heading for where it is now.  None when the chase is over.
+fn hunt(w: &mut World, ui: usize) -> Option<Step> {
+    let o = w.units[ui].hunt?;
+    if !hunt_target_ok(w, ui, o) {
+        w.units[ui].hunt = None;
+        return None;
+    }
+    let op = (w.units[o].x, w.units[o].y);
+    w.units[ui].target_pos = Some(op);
+    w.units[ui].stray_range = 1;
+    if w.units[ui].snowballs > 0 && enemies_in_range(w, ui).contains(&o) {
+        throw_snowball(w, ui, o);
+        return Some(Step::Wait);
+    }
+    if w.units[ui].snowballs == 0 {
+        // (the usual way: make one first)
+        return None;
+    }
+    Some(find_next_tile_to_pos(w, ui, op.0, op.1))
 }
 
 pub fn disban(w: &mut World, ui: usize) {
@@ -591,6 +671,7 @@ pub fn disban(w: &mut World, ui: usize) {
     u.target_pos = None;
     u.build_wall = None;
     u.wall_target = None;
+    u.hunt = None;
     match u.kind {
         UnitKind::Snowballer => u.going_for = None,
         UnitKind::Worker => {
@@ -872,6 +953,9 @@ fn dist(a: (i32, i32), b: (i32, i32)) -> f64 {
 }
 
 fn snowballer_work(w: &mut World, ui: usize) -> Step {
+    if let Some(s) = hunt(w, ui) {
+        return s;
+    }
     if !w.units[ui].run_mode {
         // a wall it was sent to knock down, or one right in its way, comes
         // before the penguins
@@ -1071,6 +1155,19 @@ fn move_to_resource(w: &mut World, ui: usize, kind: Option<ResKind>) -> Step {
                         if d < bd + 6.0 && w.rng.randint(0, 1) == 1 {
                             best = Some((d, r));
                         }
+                    }
+                }
+            }
+        }
+        // (no fish left in our own waters: any fish hole will do)
+        if best.is_none() && kind == ResKind::Fish {
+            for r in 0..w.resources.len() {
+                let res = &w.resources[r];
+                if res.kind == kind && res.quantity > 0 {
+                    let t = &w.tiles[res.tile];
+                    let d = dist((t.x, t.y), me);
+                    if best.map(|b| d < b.0).unwrap_or(true) {
+                        best = Some((d, r));
                     }
                 }
             }

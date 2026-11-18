@@ -270,7 +270,7 @@ Controls
 | right click | send the selected penguins there. What you click decides what they do: workers gather from a fish hole / crystal; snowballers chase an enemy penguin and throw at it until it is frozen; any penguin picks up a power-up or enters an igloo. Clicking on a penguin's or a crystal's picture counts, not only the tile under its feet |
 | middle click | same, running |
 | right click the same place twice | same, running: they go there without stopping to fight |
-| click a penguin type in the panel (bottom right) | keep only that type selected; the arrow disbands them |
+| click a penguin type in the panel (bottom right, next to the minimap) | keep only that type selected; the arrow disbands them |
 | `O` | disband the selected penguins |
 | `P` | the alliances panel; `Y` / `N` accept / reject an alliance offer |
 | `J` | look where the last alert (igloo being taken, penguins under attack) happened; or click the alert |

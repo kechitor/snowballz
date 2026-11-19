@@ -65,30 +65,6 @@ The game has **no Rust dependencies** (no crates): SDL2 is opened at run time,
 and the PNG, JPEG, zip, TrueType and **Ogg Vorbis** decoders are part of the
 game. `cargo build` works offline and needs no `-dev` packages.
 
-Making releases
----------------
-* **All three systems at once (GitHub):** put this folder in a GitHub
-  repository. `.github/workflows/release.yml` builds and tests the game on
-  Linux, Windows and macOS and packages each with SDL2. Publish a release
-  (*Releases -> Draft a new release*, tag such as `v0.9.6`) and the three
-  packages are added to it after about 10 minutes. You can also start it by
-  hand (*Actions -> Release -> Run workflow*): give it the tag of an existing
-  release to add (or refresh) the packages there, or leave the tag empty and
-  download the packages from the run.
-* **On your own computer:**
-  * Linux: `bash tools/make-release.sh linux` (bundles your system's SDL2;
-    also makes the AppImage if `appimagetool` is installed)
-  * macOS: `bash tools/make-release.sh macos` (downloads SDL2.framework; run
-    `rustup target add aarch64-apple-darwin x86_64-apple-darwin` first for an
-    app that runs on both kinds of Mac)
-  * Windows: `powershell -ExecutionPolicy Bypass -File tools\make-release.ps1`
-    (uses `SDL2.dll` from this folder, or downloads it)
-
-  The package lands in `dist/`.
-* The version in the package names and in the game is the one in the
-  `VERSION` file (it can have four numbers, like `0.9.8.1`); use the same
-  number for the release tag (`v0.9.8.1`).
-
 Loadout
 -------
 Before a match you choose how your igloo's penguins are split between

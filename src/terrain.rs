@@ -179,10 +179,12 @@ impl Terrain {
                 let dst = Rect::new(x0, y0, x1 - x0, y1 - y0);
                 let sxp = ((qx * 32) % 256) as i32;
                 let syp = ((qy * 32) % 256) as i32;
-                gfx::blit(&self.snow, Some(Rect::new(sxp, syp, 32, 32)), dst, 1.0);
+                // (each texture covers 256 world pixels, whatever its size)
+                let (ks, ki) = (self.snow.w / 256, self.ice.w / 256);
+                gfx::blit(&self.snow, Some(Rect::new(sxp * ks, syp * ks, 32 * ks, 32 * ks)), dst, 1.0);
                 let a = self.a[qy * self.vw + qx];
                 if a > 0.0 {
-                    gfx::blit(&self.ice, Some(Rect::new(sxp * 2, syp * 2, 64, 64)), dst, a);
+                    gfx::blit(&self.ice, Some(Rect::new(sxp * ki, syp * ki, 32 * ki, 32 * ki)), dst, a);
                 }
             }
         }

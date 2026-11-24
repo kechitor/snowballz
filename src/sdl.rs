@@ -411,6 +411,7 @@ sdl_api! {
         fn SDL_RenderFillRect(r: *mut Renderer, rect: *const Rect) -> c_int;
         fn SDL_RenderDrawLine(r: *mut Renderer, x1: c_int, y1: c_int, x2: c_int, y2: c_int) -> c_int;
         fn SDL_RenderCopy(r: *mut Renderer, t: *mut Texture, src: *const Rect, dst: *const Rect) -> c_int;
+        fn SDL_RenderCopyEx(r: *mut Renderer, t: *mut Texture, src: *const Rect, dst: *const Rect, angle: f64, center: *const c_void, flip: c_int) -> c_int;
         fn SDL_RenderPresent(r: *mut Renderer);
         fn SDL_RenderSetClipRect(r: *mut Renderer, rect: *const Rect) -> c_int;
         fn SDL_RenderReadPixels(r: *mut Renderer, rect: *const Rect, format: u32, pixels: *mut c_void, pitch: c_int) -> c_int;

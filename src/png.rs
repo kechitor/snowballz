@@ -245,12 +245,12 @@ mod tests {
 
     #[test]
     fn rgba() {
-        check("data/walk.png", "tests/data/walk.rgba");
+        check("tests/data/walk.png", "tests/data/walk.rgba");
     }
 
     #[test]
     fn rgb() {
-        check("data/themes/snowballz/bg.png", "tests/data/theme_bg.rgba");
+        check("tests/data/theme_bg.png", "tests/data/theme_bg.rgba");
     }
 
     #[test]

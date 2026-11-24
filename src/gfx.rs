@@ -60,6 +60,10 @@ struct TexData {
     ptr: *mut sdl::Texture,
     w: i32,
     h: i32,
+    /// texture pixels per drawn pixel (art made bigger than it is shown)
+    k: i32,
+    /// the same picture at half the size, for drawing it small
+    half: Option<u32>,
 }
 
 struct GlyphTex {
@@ -501,6 +505,50 @@ pub fn draw_line(x1: f64, y1: f64, x2: f64, y2: f64, color: Option<[f32; 4]>) {
     })
 }
 
+/// A line with soft edges, `width` screen pixels across (a plain line
+/// where SDL can't draw triangles).
+pub fn draw_line_smooth(x1: f64, y1: f64, x2: f64, y2: f64, width: f64, color: [f32; 4]) {
+    let drawn = with(|s| {
+        let to_screen = |x: f64, y: f64| {
+            let py = s.ty + s.sy * y;
+            (s.tx + s.sx * x, if s.yup { s.h as f64 - py } else { py })
+        };
+        let (a, b) = (to_screen(x1, y1), to_screen(x2, y2));
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = (dx * dx + dy * dy).sqrt();
+        if l < 0.01 {
+            return true;
+        }
+        let (nx, ny) = (-dy / l, dx / l);
+        let half = width / 2.0;
+        let full = sdl::Color { r: c8(color[0]), g: c8(color[1]), b: c8(color[2]), a: c8(color[3]) };
+        let clear = sdl::Color { a: 0, ..full };
+        // across the line: clear, solid, solid, clear
+        let mut verts = Vec::with_capacity(8);
+        for p in [a, b] {
+            for (o, c) in [(-half - 1.0, clear), (-half, full), (half, full), (half + 1.0, clear)] {
+                verts.push(sdl::Vertex {
+                    position: sdl::FPoint { x: (p.0 + nx * o) as f32, y: (p.1 + ny * o) as f32 },
+                    color: c,
+                    tex_coord: sdl::FPoint { x: 0.0, y: 0.0 },
+                });
+            }
+        }
+        let mut idx = Vec::with_capacity(18);
+        for i in 0..3 {
+            idx.extend_from_slice(&[i, i + 1, i + 4, i + 1, i + 5, i + 4]);
+        }
+        let Some(f) = sdl::api().SDL_RenderGeometry else { return false };
+        unsafe {
+            (sdl::api().SDL_SetRenderDrawBlendMode)(s.renderer, sdl::BLENDMODE_BLEND);
+            f(s.renderer, std::ptr::null_mut(), verts.as_ptr(), verts.len() as i32, idx.as_ptr(), idx.len() as i32) == 0
+        }
+    });
+    if !drawn {
+        draw_line(x1, y1, x2, y2, Some(color));
+    }
+}
+
 /// Square dots of `size` pixels centred on each point.
 pub fn draw_points(points: &[(f64, f64)], color: [f32; 4], size: i32) {
     with(|s| unsafe {
@@ -546,7 +594,7 @@ fn create_texture(s: &mut State, img: &Image) -> Result<u32, String> {
         if let Some(f) = api.SDL_SetTextureScaleMode {
             f(t, if s.smooth { 1 } else { 0 });
         }
-        s.textures.push(TexData { ptr: t, w: img.w as i32, h: img.h as i32 });
+        s.textures.push(TexData { ptr: t, w: img.w as i32, h: img.h as i32, k: 1, half: None });
     }
     Ok((s.textures.len() - 1) as u32)
 }
@@ -571,7 +619,23 @@ pub fn update_texture(t: &Tex, img: &Image) {
 
 /// Load (once) a game texture.  Like the old OpenGL textures it is padded
 /// to a power of two size, with the picture in the bottom left corner.
+/// Pictures loaded by name (map objects, emblems: the names come from the
+/// network too) that are drawn smaller than their files.
+const DESIGN_WIDTHS: [(&str, usize); 4] = [
+    ("plugins/powerup/powerup.png", 32),
+    ("plugins/powerup/powerup_1.png", 32),
+    ("plugins/powerup/powerup_2.png", 32),
+    ("plugins/powerup/powerup_3.png", 32),
+];
+
 pub fn texture(path: &str) -> Tex {
+    if let Some(&(_, w)) = DESIGN_WIDTHS.iter().find(|(p, _)| *p == path) {
+        return texture_sized(path, w);
+    }
+    texture_plain(path)
+}
+
+fn texture_plain(path: &str) -> Tex {
     if let Some(t) = with(|s| s.by_path.get(path).copied()) {
         return t;
     }
@@ -587,6 +651,45 @@ pub fn texture(path: &str) -> Tex {
         }
     };
     let t = texture_from_image(&img).expect("texture");
+    with(|s| s.by_path.insert(path.to_string(), t));
+    t
+}
+
+/// Load (once) a game texture whose picture is drawn `w` pixels wide; the
+/// file may be bigger (the sprites are rendered at 4 times their size), so
+/// it stays sharp zoomed in.  Halved copies are kept for drawing it smaller.
+pub fn texture_sized(path: &str, w: usize) -> Tex {
+    if let Some(t) = with(|s| s.by_path.get(path).copied()) {
+        return t;
+    }
+    let img = match Image::load(path) {
+        Ok(img) if img.w >= 2 * w => img,
+        _ => return texture_plain(path),
+    };
+    let mut k = img.w / w;
+    let (real_w, real_h) = (img.w, img.h);
+    let mut img = img.pad_pow2();
+    let mut levels = Vec::new();
+    while k % 2 == 0 {
+        let smaller = img.half();
+        levels.push((img, k));
+        img = smaller;
+        k /= 2;
+    }
+    levels.push((img, k));
+    let t = with(|s| {
+        let mut half = None;
+        for (img, k) in levels.iter().rev() {
+            let id = create_texture(s, img).expect("texture");
+            s.textures[id as usize].k = *k as i32;
+            s.textures[id as usize].half = half;
+            half = Some(id);
+        }
+        // the picture itself, at the bottom of the padded texture
+        let (img, k) = &levels[0];
+        let pad = ((img.h - real_h) / k) as i32;
+        Tex { id: half.unwrap(), sx: 0, sy: pad, w: (real_w / k) as i32, h: (real_h / k) as i32 }
+    });
     with(|s| s.by_path.insert(path.to_string(), t));
     t
 }
@@ -630,6 +733,22 @@ fn tex_ptr(s: &State, t: &Tex) -> *mut sdl::Texture {
     s.textures.get(t.id as usize).map(|d| d.ptr).unwrap_or(std::ptr::null_mut())
 }
 
+/// What to draw `t` from when it is shown `shown` pixels wide: the smallest
+/// copy that still has a pixel for each pixel on screen, and where in it.
+fn source(s: &State, t: &Tex, shown: i32) -> (*mut sdl::Texture, Rect) {
+    let mut id = t.id as usize;
+    while let Some(d) = s.textures.get(id) {
+        match d.half {
+            Some(h) if d.k / 2 * t.w >= shown => id = h as usize,
+            _ => break,
+        }
+    }
+    match s.textures.get(id) {
+        Some(d) => (d.ptr, Rect::new(t.sx * d.k, t.sy * d.k, t.w * d.k, t.h * d.k)),
+        None => (std::ptr::null_mut(), Rect::new(0, 0, 0, 0)),
+    }
+}
+
 /// Draw `t` with its top-left (world) / bottom-left (ui) corner at x, y;
 /// `color` multiplies the image.
 pub fn draw_tex(t: &Tex, x: f64, y: f64, color: [f32; 4], scale: f64) {
@@ -641,11 +760,10 @@ pub fn draw_tex(t: &Tex, x: f64, y: f64, color: [f32; 4], scale: f64) {
         if r.w <= 0 || r.h <= 0 || r.x > s.w || r.y > s.h || r.x + r.w < 0 || r.y + r.h < 0 {
             return;
         }
-        let p = tex_ptr(s, t);
+        let (p, src) = source(s, t, r.w);
         if p.is_null() {
             return;
         }
-        let src = Rect::new(t.sx, t.sy, t.w, t.h);
         unsafe {
             let api = sdl::api();
             (api.SDL_SetTextureColorMod)(p, c8(color[0]), c8(color[1]), c8(color[2]));
@@ -655,14 +773,107 @@ pub fn draw_tex(t: &Tex, x: f64, y: f64, color: [f32; 4], scale: f64) {
     })
 }
 
+/// Like draw_tex, turned `angle` degrees clockwise about its middle.
+pub fn draw_tex_rotated(t: &Tex, x: f64, y: f64, color: [f32; 4], angle: f64) {
+    if color[3] <= 0.0 {
+        return;
+    }
+    with(|s| {
+        let r = rect_of(s, x, y, t.w as f64, t.h as f64);
+        if r.w <= 0 || r.h <= 0 || r.x > s.w || r.y > s.h || r.x + r.w < 0 || r.y + r.h < 0 {
+            return;
+        }
+        let (p, src) = source(s, t, r.w);
+        if p.is_null() {
+            return;
+        }
+        unsafe {
+            let api = sdl::api();
+            (api.SDL_SetTextureColorMod)(p, c8(color[0]), c8(color[1]), c8(color[2]));
+            (api.SDL_SetTextureAlphaMod)(p, c8(color[3].min(1.0)));
+            (api.SDL_RenderCopyEx)(s.renderer, p, &src, &r, angle, std::ptr::null(), 0);
+        }
+    })
+}
+
+/// Draw `t` over a screen rectangle (y down) as a 9-slice: its corners
+/// (`corner` of its pixels square) drawn `dst_corner` pixels square (at
+/// most half the rectangle), its edges and middle stretched between them;
+/// `color` multiplies it.
+pub fn slice9(t: &Tex, corner: i32, dst: Rect, dst_corner: i32, color: [f32; 4]) {
+    if color[3] <= 0.0 || dst.w <= 0 || dst.h <= 0 {
+        return;
+    }
+    with(|s| {
+        // (the smallest copy whose corners are still as big as drawn)
+        let mut id = t.id as usize;
+        while let Some(d) = s.textures.get(id) {
+            match d.half {
+                Some(h) if d.k / 2 * corner >= dst_corner => id = h as usize,
+                _ => break,
+            }
+        }
+        let Some(d) = s.textures.get(id) else { return };
+        if d.ptr.is_null() {
+            return;
+        }
+        let k = d.k.max(1);
+        let (sx, sy, sw, sh, c) = (t.sx * k, t.sy * k, t.w * k, t.h * k, corner * k);
+        let dc = dst_corner.min(dst.w / 2).min(dst.h / 2).max(0);
+        let cols = [(sx, c, dst.x, dc), (sx + c, sw - 2 * c, dst.x + dc, dst.w - 2 * dc), (sx + sw - c, c, dst.x + dst.w - dc, dc)];
+        let rows = [(sy, c, dst.y, dc), (sy + c, sh - 2 * c, dst.y + dc, dst.h - 2 * dc), (sy + sh - c, c, dst.y + dst.h - dc, dc)];
+        unsafe {
+            let api = sdl::api();
+            (api.SDL_SetTextureColorMod)(d.ptr, c8(color[0]), c8(color[1]), c8(color[2]));
+            (api.SDL_SetTextureAlphaMod)(d.ptr, c8(color[3].min(1.0)));
+            for &(ry, rh, dy, dh) in &rows {
+                for &(rx, rw, dx, dw) in &cols {
+                    if dw > 0 && dh > 0 && rw > 0 && rh > 0 {
+                        (api.SDL_RenderCopy)(s.renderer, d.ptr, &Rect::new(rx, ry, rw, rh), &Rect::new(dx, dy, dw, dh));
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Part of a ring (screen pixels, y down): centre, inner and outer radius,
+/// from the top clockwise over `frac` of a turn.  False if the SDL version
+/// can't draw it.
+pub fn arc(cx: f64, cy: f64, r0: f64, r1: f64, frac: f64, color: [f32; 4]) -> bool {
+    let frac = frac.clamp(0.0, 1.0);
+    let n = ((frac * 64.0).ceil() as usize).max(1);
+    let c = sdl::Color { r: c8(color[0]), g: c8(color[1]), b: c8(color[2]), a: c8(color[3].min(1.0)) };
+    let mut verts = Vec::with_capacity(2 * (n + 1));
+    for i in 0..=n {
+        let a = i as f64 / n as f64 * frac * std::f64::consts::TAU;
+        let (sn, cs) = a.sin_cos();
+        for r in [r0, r1] {
+            let position = sdl::FPoint { x: (cx + sn * r) as f32, y: (cy - cs * r) as f32 };
+            verts.push(sdl::Vertex { position, color: c, tex_coord: sdl::FPoint { x: 0.0, y: 0.0 } });
+        }
+    }
+    let mut idx = Vec::with_capacity(6 * n);
+    for i in 0..n as i32 {
+        let j = 2 * i;
+        idx.extend_from_slice(&[j, j + 1, j + 2, j + 1, j + 3, j + 2]);
+    }
+    if frac <= 0.0 {
+        return true;
+    }
+    geometry(None, &verts, &idx)
+}
+
 /// Draw a texture into a screen rectangle (y down), no transform.
 pub fn blit(t: &Tex, src: Option<Rect>, dst: Rect, alpha: f32) {
     with(|s| {
-        let p = tex_ptr(s, t);
+        let (p, src) = match src {
+            Some(r) => (tex_ptr(s, t), r),
+            None => source(s, t, dst.w),
+        };
         if p.is_null() || dst.w <= 0 || dst.h <= 0 {
             return;
         }
-        let src = src.unwrap_or(Rect::new(t.sx, t.sy, t.w, t.h));
         unsafe {
             let api = sdl::api();
             (api.SDL_SetTextureColorMod)(p, 255, 255, 255);

@@ -75,7 +75,9 @@ fn text_size(v: &View, text: &str, design_size: u32) -> (i32, i32) {
 pub fn slice9(v: &View, name: &str, r: Rect) {
     let t = theme(name);
     let (iw, ih) = (t.w, t.h);
-    let (sbx, sby) = (6, 8);
+    // (the pictures are 20 wide at the design size; the files may be bigger)
+    let k = (iw / 20).max(1);
+    let (sbx, sby) = (6 * k, 8 * k);
     let bx = ((6.0 * v.scale).round() as i32).max(1);
     let by = ((8.0 * v.scale).round() as i32).max(1);
     let w = r.w.max(2 * bx + 1);
@@ -733,8 +735,10 @@ impl Panel {
 /// rectangle).
 pub fn panel_bg(v: &View, r: Rect) {
     let bg = theme("bg.png");
-    let tw = ((bg.w as f64 * v.scale).round() as i32).max(1);
-    let th = ((bg.h as f64 * v.scale).round() as i32).max(1);
+    // (16 pixels at the design size; the file may be bigger)
+    let k = (bg.w / 16).max(1) as f64;
+    let tw = ((bg.w as f64 / k * v.scale).round() as i32).max(1);
+    let th = ((bg.h as f64 / k * v.scale).round() as i32).max(1);
     gfx::set_clip(Some(r));
     let mut yy = r.y;
     while yy < r.y + r.h {

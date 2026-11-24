@@ -52,6 +52,8 @@ struct Imprint {
     y: f64,
     color: [f32; 3],
     t0: u32,
+    /// degrees clockwise (footprints point the way the penguin walks)
+    angle: f64,
 }
 
 /// Fading marks on the ground (footprints, snowball marks, move markers).
@@ -62,12 +64,16 @@ pub struct ImprintSet {
 }
 
 impl ImprintSet {
-    pub fn new(path: &str, seconds: f64) -> ImprintSet {
-        ImprintSet { tex: gfx::texture(path), length: (seconds * 1000.0) as u32, items: Vec::new() }
+    pub fn new(tex: Tex, seconds: f64) -> ImprintSet {
+        ImprintSet { tex, length: (seconds * 1000.0) as u32, items: Vec::new() }
     }
 
     pub fn add(&mut self, x: f64, y: f64, color: [f32; 3], now: u32) {
-        self.items.push(Imprint { x, y, color, t0: now });
+        self.items.push(Imprint { x, y, color, t0: now, angle: 0.0 });
+    }
+
+    pub fn add_turned(&mut self, x: f64, y: f64, angle: f64, now: u32) {
+        self.items.push(Imprint { x, y, color: [1.0; 3], t0: now, angle });
     }
 
     /// Colours of 0-255 are turned into 0-1 (like the Python version).
@@ -85,7 +91,12 @@ impl ImprintSet {
                 continue;
             }
             let a = Lerp::new(1.0, 0.0, i.t0, len as f64).get(now) as f32;
-            self.tex.draw(i.x, i.y, [i.color[0], i.color[1], i.color[2], a], 1.0);
+            let color = [i.color[0], i.color[1], i.color[2], a];
+            if i.angle == 0.0 {
+                self.tex.draw(i.x, i.y, color, 1.0);
+            } else {
+                gfx::draw_tex_rotated(&self.tex, i.x, i.y, color, i.angle);
+            }
         }
     }
 
@@ -95,10 +106,16 @@ struct Flake {
     tn: usize,
     x0: f64,
     y0: f64,
-    life: f64,
+    /// sideways drift per pixel fallen
+    drift: f64,
+    /// how far it falls before it has melted away
+    fall: f64,
     t0: u32,
     lifetime: f64,
 }
+
+/// How far off screen flakes start, above the top or past a side.
+const FLAKE_MARGIN: f64 = 24.0;
 
 /// Falling snow at night.
 pub struct Snowflakes {
@@ -110,7 +127,7 @@ pub struct Snowflakes {
 
 impl Snowflakes {
     pub fn new() -> Snowflakes {
-        let st = gfx::texture("data/snowparticles.png");
+        let st = gfx::texture_sized("data/snowparticles.png", 16);
         Snowflakes {
             tex: [st.sub(0, 0, 8, 8), st.sub(8, 0, 8, 8), st.sub(0, 8, 8, 8), st.sub(8, 8, 8, 8)],
             flakes: Vec::new(),
@@ -122,19 +139,34 @@ impl Snowflakes {
     pub fn run(&mut self, falling: bool, now: u32, rng: &mut Rng, view: (f64, f64, f64, f64)) {
         self.flakes.retain(|f| (now.wrapping_sub(f.t0) as f64) < f.lifetime);
         let (vx, vy, sw, sh) = view;
+        let m = FLAKE_MARGIN;
+        // (the screen with a margin round it: flakes start in the margin
+        // and fall in, never just appear)
+        self.bounds = [[vx - m, vx + sw + m], [vy - m, vy + sh + m]];
         if falling && self.flakes.len() < self.max {
             let tn = rng.randint(0, 3) as usize;
-            let x0 = rng.random() * sw;
-            let y0 = rng.random() * sh;
             let speed = rng.random() * 0.05 + 0.05;
-            let life = rng.random() * 200.0 + 300.0;
-            self.flakes.push(Flake { tn, x0, y0, life, t0: now, lifetime: life / speed });
+            let (x0, y0, drift) = if rng.randint(1, 4) == 1 {
+                // in from a side, blown inwards, somewhere in the upper half
+                let left = rng.randint(0, 1) == 0;
+                let drift = rng.random() * 0.3 + 0.3;
+                let y0 = vy + rng.random() * sh * 0.5;
+                if left { (vx - m * 0.5, y0, drift) } else { (vx + sw + m * 0.5, y0, -drift) }
+            } else {
+                // in from the top
+                (vx - m + rng.random() * (sw + 2.0 * m), vy - m * 0.5, (rng.random() - 0.5) * 0.4)
+            };
+            // where it lands: anywhere from a third of the way down to the bottom
+            let land = vy + (rng.random() * 0.7 + 0.3) * sh;
+            let fall = (land - y0).max(sh * 0.2);
+            self.flakes.push(Flake { tn, x0, y0, drift, fall, t0: now, lifetime: fall / speed });
         }
-        self.bounds = [[vx, vx + sw], [vy, vy + sh]];
         for f in &self.flakes {
-            let x = wrap(self.bounds[0][0], self.bounds[0][1], f.x0);
-            let y = wrap(self.bounds[1][0], self.bounds[1][1], Lerp::new(f.y0, f.y0 + f.life, f.t0, f.lifetime).get(now));
-            let scale = Lerp::new(1.0, 0.0, f.t0, f.lifetime).get(now);
+            let p = (now.wrapping_sub(f.t0) as f64 / f.lifetime).clamp(0.0, 1.0);
+            let x = wrap(self.bounds[0][0], self.bounds[0][1], f.x0 + f.drift * f.fall * p);
+            let y = wrap(self.bounds[1][0], self.bounds[1][1], f.y0 + f.fall * p);
+            // full size on the way down, melting away over the last quarter
+            let scale = ((1.0 - p) / 0.25).min(1.0);
             self.tex[f.tn].draw(x, y, [1.0; 4], scale);
         }
     }

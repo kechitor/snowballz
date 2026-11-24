@@ -45,6 +45,7 @@ mod effects;
 mod game;
 mod game_menu;
 mod gfx;
+mod glass;
 mod hud;
 mod igloo;
 mod image;

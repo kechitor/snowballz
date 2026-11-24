@@ -53,6 +53,31 @@ impl Image {
         out
     }
 
+    /// Half the size, each pixel the average of four (weighted by alpha, so
+    /// transparent pixels don't darken the edges).
+    pub fn half(&self) -> Image {
+        let (w, h) = (self.w / 2, self.h / 2);
+        let mut out = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = [0u32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let p = self.get(2 * x + dx, 2 * y + dy);
+                    let a = p[3] as u32;
+                    for c in 0..3 {
+                        sum[c] += p[c] as u32 * a;
+                    }
+                    sum[3] += a;
+                }
+                if sum[3] > 0 {
+                    let c = |v: u32| ((v + sum[3] / 2) / sum[3]) as u8;
+                    out.set(x, y, [c(sum[0]), c(sum[1]), c(sum[2]), ((sum[3] + 2) / 4) as u8]);
+                }
+            }
+        }
+        out
+    }
+
     /// The old OpenGL code padded textures to a power of two with the image
     /// in the bottom left corner; sizes (and so draw positions) depend on it.
     pub fn pad_pow2(self) -> Image {
@@ -69,5 +94,19 @@ impl Image {
             out.px[d..d + self.w * 4].copy_from_slice(&self.px[s..s + self.w * 4]);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Image;
+
+    #[test]
+    fn half_ignores_transparent_pixels() {
+        let mut img = Image::new(2, 2);
+        img.set(0, 0, [200, 100, 50, 255]);
+        let h = img.half();
+        assert_eq!((h.w, h.h), (1, 1));
+        assert_eq!(h.get(0, 0), [200, 100, 50, 64]);
     }
 }

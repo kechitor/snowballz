@@ -336,6 +336,14 @@ pub struct Unit {
     pub path: Vec<(i32, i32)>,
     pub path_goal: Option<(i32, i32)>,
     pub path_version: u32,
+    /// (drawing) how far a gathering penguin is drawn from its tile: onto
+    /// a ring round what it gathers, sprung there and back; its speed; and
+    /// last frame's feet in its sprite and whether it was gathering then
+    /// (a new sprite keeps its feet where they were)
+    pub gather_shift: (f64, f64),
+    pub gather_vel: (f64, f64),
+    pub drawn_feet: Option<(f64, f64)>,
+    pub drawn_gathering: bool,
 }
 
 impl Unit {
@@ -453,11 +461,18 @@ pub struct AiCfg {
 
 pub struct Penguins {
     pub cells: Vec<[Tex; 11]>,
+    /// per direction, in a 32 x 32 cell: where the penguin stands (the
+    /// middle of it, just above its lowest pixel)
+    pub feet: [(f64, f64); 8],
+    /// and, per frame (gathering sheets only), where the orange tool it
+    /// holds (a fishing rod, a pick's handle) ends, reaching out the way it
+    /// faces
+    pub tip: [[Option<(f64, f64)>; 10]; 8],
 }
 
 impl Penguins {
     fn load(path: &str) -> Penguins {
-        let big = gfx::texture(path);
+        let big = gfx::texture_sized(path, 512);
         let mut cells = Vec::new();
         for dc in 0..8 {
             let mut row = [big; 11];
@@ -466,7 +481,23 @@ impl Penguins {
             }
             cells.push(row);
         }
-        Penguins { cells }
+        let mut feet = [(16.0, 26.0); 8];
+        let mut tip = [[None; 10]; 8];
+        if let Ok(img) = Image::load(path) {
+            let tools = path.contains("gather");
+            for d in 0..8 {
+                for f in 0..if tools { 10 } else { 1 } {
+                    if let Some((ft, t)) = measure_cell(&img, d, f) {
+                        // (the feet of the first frame: steady)
+                        if f == 0 {
+                            feet[d] = ft;
+                        }
+                        tip[d][f] = t;
+                    }
+                }
+            }
+        }
+        Penguins { cells, feet, tip }
     }
 
     /// frame 0-9, or 10 for "idle"
@@ -475,9 +506,60 @@ impl Penguins {
     }
 }
 
+/// Frame `f` of direction `d` of a sheet (512 x 256 game pixels at any
+/// scale): its feet and tool tip, as in `Penguins`.
+fn measure_cell(img: &Image, d: usize, f: usize) -> Option<((f64, f64), Option<(f64, f64)>)> {
+    let k = img.w / 512;
+    if k == 0 || img.h < 256 * k {
+        return None;
+    }
+    let (cell, x0, y0) = (32 * k, 32 * k * f, 32 * k * d);
+    let (mut n, mut sx, mut bottom) = (0usize, 0usize, 0usize);
+    let mut orange = Vec::new();
+    for y in 0..cell {
+        for x in 0..cell {
+            let [r, g, b, a] = img.get(x0 + x, y0 + y).map(|v| v as i32);
+            if a > 128 {
+                n += 1;
+                sx += x;
+                bottom = bottom.max(y);
+                if a > 150 && r > 150 && r - b > 90 && g < r - 30 && g > 50 {
+                    orange.push((x, y));
+                }
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let s = k as f64;
+    let feet = (sx as f64 / n as f64, bottom as f64 - 2.0 * s);
+    // the tip: far from its feet and out the way it faces (not its orange
+    // flippers: nothing within 7 game pixels of its feet)
+    let (dx, dy) = DIRECTIONS[d];
+    let dn = ((dx * dx + dy * dy) as f64).sqrt();
+    let score = |&(x, y): &(usize, usize)| {
+        let (x, y) = (x as f64, y as f64);
+        (x * dx as f64 + y * dy as f64) / dn + ((x - feet.0).powi(2) + (y - feet.1).powi(2)).sqrt()
+    };
+    let tip = orange
+        .iter()
+        .filter(|&&(x, y)| ((x as f64 - feet.0).powi(2) + (y as f64 - feet.1).powi(2)).sqrt() > 7.0 * s)
+        .max_by(|a, b| score(a).total_cmp(&score(b)))
+        .map(|&(tx, ty)| {
+            // (a little way in from its very end, in the middle of the rod:
+            // the line stays on it at any zoom)
+            let near: Vec<_> = orange.iter().filter(|&&(x, y)| (x as f64 - tx as f64).powi(2) + (y as f64 - ty as f64).powi(2) < (2.5 * s).powi(2)).collect();
+            let m = near.len() as f64;
+            (near.iter().map(|p| p.0 as f64).sum::<f64>() / m / s, near.iter().map(|p| p.1 as f64).sum::<f64>() / m / s)
+        });
+    Some(((feet.0 / s, feet.1 / s), tip))
+}
+
 pub struct Textures {
     pub penguins: HashMap<&'static str, Penguins>,
-    pub frozen: Tex,
+    /// by unit kind: the penguin in its ice block, and its outfit
+    pub frozen: HashMap<&'static str, (Tex, Tex)>,
     pub trees: Vec<Tex>,
     pub icepinnacle: Vec<Tex>,
     pub fish: Tex,
@@ -511,6 +593,8 @@ impl Textures {
             ("workerunloadcrystal", "workerunloadcrystal"),
             ("gathering", "gatherfish"),
             ("workergathering", "workergatherfish"),
+            ("gatheringcrystal", "gathercrystal"),
+            ("workergatheringcrystal", "workergathercrystal"),
             ("walkfish", "walkfish"),
             ("workerwalkfish", "workerwalkfish"),
             ("walkcrystal", "walkcrystal"),
@@ -518,26 +602,29 @@ impl Textures {
         ] {
             penguins.insert(k, Penguins::load(&format!("data/{}.png", f)));
         }
-        let tt = gfx::texture("data/trees.png");
-        let it = gfx::texture("data/icepinnacles.png");
-        let ss = gfx::texture("data/snowball.png");
+        let tt = gfx::texture_sized("data/trees.png", 256);
+        let it = gfx::texture_sized("data/icepinnacles.png", 256);
+        let ss = gfx::texture_sized("data/snowball.png", 16);
         Textures {
             penguins,
-            frozen: gfx::texture("data/frozen.png"),
+            frozen: ["worker", "snowballer"]
+                .into_iter()
+                .map(|k| (k, (gfx::texture_sized(&format!("data/frozen{}.png", k), 32), gfx::texture_sized(&format!("data/frozen{}outfit.png", k), 32))))
+                .collect(),
             trees: vec![tt.sub(0, 0, 64, 64), tt.sub(64, 0, 64, 64), tt.sub(0, 64, 64, 64), tt.sub(64, 64, 64, 64)],
             icepinnacle: vec![it.sub(0, 0, 64, 64), it.sub(64, 0, 64, 64), it.sub(0, 64, 64, 64)],
-            fish: gfx::texture("data/fish.png"),
-            fish_empty: gfx::texture("data/fishempty.png"),
-            crystal: gfx::texture("data/crystal.png"),
-            crystal_empty: gfx::texture("data/crystalempty.png"),
+            fish: gfx::texture_sized("data/fish.png", 32),
+            fish_empty: gfx::texture_sized("data/fishempty.png", 32),
+            crystal: gfx::texture_sized("data/crystal.png", 32),
+            crystal_empty: gfx::texture_sized("data/crystalempty.png", 32),
             snowball: [ss.sub(0, 0, 8, 8), ss.sub(8, 0, 8, 8)],
-            snowparticle: gfx::texture("data/snowparticle.png"),
-            smoke: gfx::texture("data/smoke.png"),
-            selected: gfx::texture("data/selected.png"),
-            marker: gfx::texture("data/marker.png"),
-            frozen_flag: gfx::texture("data/frozen_flag.png"),
-            jeopardy_marker: gfx::texture("data/jeopardy_marker.png"),
-            igloo: gfx::texture("data/igloo.png"),
+            snowparticle: gfx::texture_sized("data/snowparticle.png", 4),
+            smoke: gfx::texture_sized("data/smoke.png", 8),
+            selected: gfx::texture_sized("data/selected.png", 32),
+            marker: gfx::texture_sized("data/marker.png", 32),
+            frozen_flag: gfx::texture_sized("data/frozen_flag.png", 32),
+            jeopardy_marker: gfx::texture_sized("data/jeopardy_marker.png", 32),
+            igloo: gfx::texture_sized("data/igloo.png", 128),
         }
     }
 }
@@ -601,6 +688,8 @@ pub struct Imprints {
 /// Something to draw in the depth-sorted draw buffer.
 pub enum DrawItem {
     Tex { tex: Tex, x: f64, y: f64, color: [f32; 4] },
+    /// (`width` in game pixels)
+    Line { from: (f64, f64), to: (f64, f64), width: f64, color: [f32; 4] },
 }
 
 pub struct Rendered {
@@ -779,12 +868,12 @@ impl World {
             chat: Chat::default(),
             groups: Default::default(),
             imprints: Imprints {
-                snowball: ImprintSet::new("data/snowballimprent.png", 2.0),
-                snowball_ice: ImprintSet::new("data/snowball_ice_imprent.png", 2.0),
-                foot: ImprintSet::new("data/footprint.png", 4.0),
-                moves: ImprintSet::new("data/marker.png", 0.3),
-                run_moves: ImprintSet::new("data/marker_run.png", 0.3),
-                gather_moves: ImprintSet::new("data/marker_gather.png", 0.3),
+                snowball: ImprintSet::new(gfx::texture_sized("data/snowballimprent.png", 8), 2.0),
+                snowball_ice: ImprintSet::new(gfx::texture_sized("data/snowball_ice_imprent.png", 8), 2.0),
+                foot: ImprintSet::new(gfx::texture_sized("data/footprint.png", 8), 4.0),
+                moves: ImprintSet::new(gfx::texture_sized("data/marker.png", 32), 0.3),
+                run_moves: ImprintSet::new(gfx::texture_sized("data/marker_run.png", 32), 0.3),
+                gather_moves: ImprintSet::new(gfx::texture_sized("data/marker_gather.png", 32), 0.3),
             },
             flakes: Snowflakes::new(),
             plugins: Plugins::default(),
@@ -1035,6 +1124,10 @@ impl World {
             y: pos.1,
             draw_x: 0.0,
             draw_y: 0.0,
+            gather_shift: (0.0, 0.0),
+            gather_vel: (0.0, 0.0),
+            drawn_feet: None,
+            drawn_gathering: false,
             current_frame: frame,
             anim_time: 0.0,
             group: None,

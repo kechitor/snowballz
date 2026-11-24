@@ -664,21 +664,26 @@ fn hunt(w: &mut World, ui: usize) -> Option<Step> {
     Some(find_next_tile_to_pos(w, ui, op.0, op.1))
 }
 
+/// Stop: drop every order and stay put (milling about where it stands).
 pub fn disban(w: &mut World, ui: usize) {
+    if matches!(w.units[ui].state, State::Entering | State::InBuilding) {
+        return;
+    }
     let u = &mut w.units[ui];
-    u.selected = false;
+    u.switch_pending = false;
+    u.run_mode = false;
+    u.last_tiles.clear();
     u.set_go_to_building(None);
-    u.target_pos = None;
     u.build_wall = None;
     u.wall_target = None;
     u.hunt = None;
-    match u.kind {
-        UnitKind::Snowballer => u.going_for = None,
-        UnitKind::Worker => {
-            u.going_for = Some(ResKind::Fish);
-            u.target_resource = None;
-        }
+    u.going_for = None;
+    u.target_resource = None;
+    if u.state == State::Gathering {
+        u.state = State::Stray;
     }
+    u.target_pos = Some((u.x, u.y));
+    u.stray_range = 2;
 }
 
 pub fn move_to_building(w: &mut World, ui: usize, b: usize) -> Step {
@@ -1255,17 +1260,20 @@ fn animate_step(w: &mut World, ui: usize) {
                 y += 8.0;
             }
         } else {
-            y += 16.0;
-            if f6 {
-                x += 16.0;
-                y += 8.0;
-            } else {
-                x += 16.0;
-                y += 3.0;
-            }
+            // (side by side across the way it walks)
+            let side = if f6 { 2.5 } else { -2.5 };
+            x += 16.0 - u.direction.1 as f64 * side;
+            y += 21.5 + u.direction.0 as f64 * side;
+        }
+        // (none on ice)
+        let ti = w.tile_index((x / 32.0).floor() as i32, ((y + w.elevation(u.x, u.y) * ELEV_MULT) / 32.0).floor() as i32);
+        if ti.is_some_and(|ti| w.tiles[ti].kind == TileKind::Ice) {
+            return;
         }
         let now = w.now();
-        w.imprints.foot.add(x, y, [1.0; 3], now);
+        // (the picture's toes point up: turn them the way it walks)
+        let angle = (u.direction.0 as f64).atan2(-u.direction.1 as f64).to_degrees();
+        w.imprints.foot.add_turned(x, y, angle, now);
     }
 }
 

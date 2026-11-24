@@ -540,10 +540,10 @@ impl Editor {
         if self.zoom >= 10.0 {
             let (ax, ay) = self.tile_at((vr.x, vr.y));
             let (bx, by) = self.tile_at((vr.x + vr.w, vr.y + vr.h));
-            let trees = gfx::texture("data/trees.png");
-            let pins = gfx::texture("data/icepinnacles.png");
-            let fish = gfx::texture("data/fish.png");
-            let crystal = gfx::texture("data/crystal.png");
+            let trees = gfx::texture_sized("data/trees.png", 256);
+            let pins = gfx::texture_sized("data/icepinnacles.png", 256);
+            let fish = gfx::texture_sized("data/fish.png", 32);
+            let crystal = gfx::texture_sized("data/crystal.png", 32);
             for ty in (ay - 2).max(0)..=(by + 2).min(mh - 1) {
                 for tx in (ax - 2).max(0)..=(bx + 2).min(mw - 1) {
                     let i = (ty * mw + tx) as usize;
@@ -561,7 +561,7 @@ impl Editor {
                 }
             }
         }
-        let igloo = gfx::texture("data/igloo.png");
+        let igloo = gfx::texture_sized("data/igloo.png", 128);
         for (i, &(ix, iy)) in m.g.igloos.iter().enumerate() {
             let (sx, sy) = self.screen_of(ix as f64, iy as f64);
             let size = (IGLOO_SIZE as f64 * self.zoom) as i32;

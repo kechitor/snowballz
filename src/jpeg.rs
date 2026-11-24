@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn matches_pil_closely() {
-        let img = Image::load("data/bg_menu.jpg").unwrap();
+        let img = Image::load("tests/data/bg_menu.jpg").unwrap();
         assert_eq!((img.w, img.h), (3440, 1440));
         let want = std::fs::read("tests/data/bg_menu_crop.rgb").unwrap();
         let crop = img.crop(1000, 400, 256, 256);

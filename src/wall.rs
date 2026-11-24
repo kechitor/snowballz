@@ -829,7 +829,7 @@ const ARMS: [(i32, i32); 8] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1
 
 fn piece(row: i32, col: i32) -> crate::gfx::Tex {
     // (y counted from the bottom; textures are padded at the top)
-    let sheet = crate::gfx::texture("data/walls.png");
+    let sheet = crate::gfx::texture_sized("data/walls.png", 1024);
     sheet.sub(col * CELL, (ROWS - 1 - row) * CELL, CELL, CELL)
 }
 

@@ -185,9 +185,9 @@ pub fn play(kind: GameType, mapname: &str) -> Result<(), String> {
         lobbying: false,
         disconnected_at: None,
         clock: Clock::new(),
-        lobbybg: gfx::texture("data/lobbybg.png"),
+        lobbybg: gfx::texture_sized("data/lobbybg.png", 256),
         snow: gfx::texture("data/snow.png"),
-        cursor: gfx::texture("data/mouse_cursor.png"),
+        cursor: gfx::texture_sized("data/mouse_cursor.png", 64),
         hooks: Hooks::from_env(),
         frame_errors: 0,
         error: None,
@@ -649,6 +649,7 @@ impl Game {
             w.started_at = clock::now();
         }
         look_at_starting_igloo(self.world.as_mut().unwrap());
+        test_look(self.world.as_mut().unwrap());
         // 3, 2, 1, go! (game time stands still meanwhile: the view can
         // move and orders can be given, nobody moves yet)
         if std::env::var("SNOWBALLZ_NO_COUNTDOWN").is_err() {
@@ -782,6 +783,7 @@ impl Game {
             // draw the frame again and save it before it is shown
             if let (Some(w), Some(s)) = (self.world.as_mut(), self.session.as_mut()) {
                 s.loading_alpha = 0.0;
+                test_look(w);
                 crate::gfx::set_present_hook(Some(path));
                 display::draw(s, w, 0);
             }
@@ -1219,6 +1221,30 @@ pub fn add_map_players(w: &mut World) {
 
 pub fn look_at_starting_igloo(w: &mut World) {
     ctrl::look_at_home(w);
+}
+
+/// Test hook: SNOWBALLZ_LOOK=fx,fy[,zoom] looks at a spot (fractions of the
+/// map), zoomed (at the start, and again for each screenshot).
+fn test_look(w: &mut World) {
+    // (SNOWBALLZ_SELECT=1: my penguins out on the map are selected, to see
+    // the command bar)
+    if std::env::var("SNOWBALLZ_SELECT").is_ok_and(|v| v == "1") && w.me.is_some() {
+        for u in 0..w.units.len() {
+            if w.igloo_player(u) == w.me && w.units[u].state != crate::world::State::InBuilding {
+                w.units[u].selected = true;
+                w.selected.insert(u);
+            }
+        }
+    }
+    let Ok(look) = std::env::var("SNOWBALLZ_LOOK") else { return };
+    let f: Vec<f64> = look.split(',').filter_map(|v| v.parse().ok()).collect();
+    if f.len() < 2 {
+        return;
+    }
+    if let Some(&z) = f.get(2) {
+        ctrl::change_zoom(w, z - w.view.zoom, None);
+    }
+    ctrl::look_at(w, f[0] * (w.size.0 * 32) as f64, f[1] * (w.size.1 * 32) as f64);
 }
 
 /// The units of a client's order that really belong to that client.

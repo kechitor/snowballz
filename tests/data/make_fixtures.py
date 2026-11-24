@@ -19,8 +19,8 @@ open(os.path.join(out, "zlib_fixed.bin"), "wb").write(
 def dump(path, name, mode="RGBA"):
     im = Image.open(path).convert(mode)
     open(os.path.join(out, name), "wb").write(im.tobytes())
-dump("data/walk.png", "walk.rgba")
-dump("data/themes/snowballz/bg.png", "theme_bg.rgba")
-dump("icon.png", "icon.rgba")
-im = Image.open("data/bg_menu.jpg").convert("RGB").crop((1000, 400, 1256, 656))
+dump("tests/data/walk.png", "walk.rgba")
+dump("tests/data/theme_bg.png", "theme_bg.rgba")
+dump("tests/data/icon.png", "icon.rgba")
+im = Image.open("tests/data/bg_menu.jpg").convert("RGB").crop((1000, 400, 1256, 656))
 open(os.path.join(out, "bg_menu_crop.rgb"), "wb").write(im.tobytes())

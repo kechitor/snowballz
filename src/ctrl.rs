@@ -220,6 +220,7 @@ fn ally_action(w: &mut World, a: hud::AllyAction) {
                 w.notice(&format!("{} now plays at {}", w.player_name(p), l.label()));
             }
         }
+        hud::AllyAction::TogglePanel => w.diplomacy_open = !w.diplomacy_open,
         hud::AllyAction::Nothing => {}
     }
 }
@@ -402,7 +403,6 @@ pub fn disban_units(w: &mut World) {
     for u in sel {
         unit::disban(w, u);
     }
-    w.selected.clear();
 }
 
 fn scroll_screen(w: &mut World, pos: (i32, i32), dt: u32) {
@@ -803,6 +803,9 @@ pub fn handle_events(w: &mut World, s: &mut Session, dt: u32) -> bool {
                         PanelClick::Snowballers => hud::keep_kind(w, UnitKind::Snowballer),
                         PanelClick::Workers => hud::keep_kind(w, UnitKind::Worker),
                         PanelClick::Disband => disban_units(w),
+                        PanelClick::SnowWall => wall_mode(w, WallMode::Build),
+                        PanelClick::IceWall => wall_mode(w, WallMode::Ice),
+                        PanelClick::SwitchClass => switch_class(w),
                         PanelClick::Nothing => {}
                     }
                 }

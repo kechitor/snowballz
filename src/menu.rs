@@ -9,6 +9,10 @@ use crate::settings;
 use crate::ui::{self, Action, Button, DRect, Ev, ImageW, Input, Label, Page, Panel, SelectBox, Slider, View, Widget};
 use crate::zip::Zip;
 
+/// The size a map's picture is drawn at (the picture may be bigger, for
+/// big screens).
+const ICON: i32 = 256;
+
 pub struct MapInfo {
     pub name: String,
     pub filename: String,
@@ -260,13 +264,13 @@ impl Menu {
         );
 
         // single play
-        let panel_tex = gfx::image_texture("data/map_img_panel.png").unwrap_or_else(|_| gfx::texture("data/noicon.png"));
+        let panel_tex = gfx::texture_sized("data/map_img_panel.png", 266);
         pages[1].add(Widget::Image(ImageW { tex: panel_tex, rect: DRect { x: 20, y: 125, w: panel_tex.w, h: panel_tex.h } }));
         let (icon, name, obj, desc) = match maps.first() {
             Some(m) => (m.icon, m.name.clone(), m.objectives.clone(), m.description.clone()),
             None => (gfx::texture("data/noicon.png"), "No maps found".into(), String::new(), String::new()),
         };
-        let play_icon = pages[1].add(Widget::Image(ImageW { tex: icon, rect: DRect { x: 25, y: 130, w: icon.w, h: icon.h } }));
+        let play_icon = pages[1].add(Widget::Image(ImageW { tex: icon, rect: DRect { x: 25, y: 130, w: ICON, h: ICON } }));
         let play_name = pages[1].add(Widget::Label(Label::new(&name, 25, 300, 260)));
         let play_objectives = pages[1].add(Widget::Label(Label::new(&obj, 13, 300, 310)));
         let play_description = pages[1].add(Widget::Label(Label::new(&desc, 13, 300, 290)));
@@ -435,8 +439,6 @@ impl Menu {
         let p = &mut self.pages[1];
         if let Widget::Image(i) = &mut p.widgets[self.play_icon] {
             i.tex = icon;
-            i.rect.w = icon.w;
-            i.rect.h = icon.h;
         }
         for (idx, text) in [(self.play_name, name), (self.play_objectives, obj), (self.play_description, desc)] {
             if let Widget::Label(l) = &mut p.widgets[idx] {

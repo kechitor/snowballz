@@ -4,7 +4,7 @@
 use crate::backgrounds;
 use crate::clock;
 use crate::game::Session;
-use crate::gfx::{self, Tex};
+use crate::gfx;
 use crate::hud;
 use crate::igloo;
 use crate::settings;
@@ -14,12 +14,41 @@ use crate::world::*;
 
 /// Draw a penguin (into the draw buffer; the warmth bar and group number
 /// straight away).
-fn draw_unit(w: &mut World, ui: usize) {
+fn draw_unit(w: &mut World, ui: usize, dt: f64) {
     let t = gfx::time();
     if w.units[ui].direction == (0, 0) {
         w.units[ui].direction = (0, 1);
     }
     let (x, y) = w.units[ui].sprite_xy(t);
+    let dir = w.units[ui].direction;
+    let sheet = sheet_name(w, &w.units[ui]);
+    let feet = sheet.as_deref().and_then(|s| w.tex.penguins.get(s)).map(|p| p.feet[dir_index(dir)]);
+    // gathering: drawn on a ring round what it gathers
+    let spot = gather_spot(w, &w.units[ui], x, y, feet);
+    {
+        let u = &mut w.units[ui];
+        let gathering = spot.is_some();
+        // into or out of a gathering sprite: its feet stay where they were
+        if let (Some(f), Some(was), true) = (feet, u.drawn_feet, gathering || u.drawn_gathering) {
+            u.gather_shift.0 += was.0 - f.0;
+            u.gather_shift.1 += was.1 - f.1;
+        }
+        u.drawn_feet = feet;
+        u.drawn_gathering = gathering;
+        // then sprung onto the ring (or back): starting and stopping gently
+        let aim = spot.map(|s| s.aim).unwrap_or((0.0, 0.0));
+        let mut left = (dt / 1000.0).min(0.1);
+        while left > 0.0 {
+            let h = left.min(1.0 / 120.0);
+            left -= h;
+            for (s, v, a) in [(&mut u.gather_shift.0, &mut u.gather_vel.0, aim.0), (&mut u.gather_shift.1, &mut u.gather_vel.1, aim.1)] {
+                *v += ((a - *s) * GATHER_SPRING * GATHER_SPRING - *v * 2.0 * GATHER_SPRING) * h;
+                *s += *v * h;
+            }
+        }
+    }
+    let shift = w.units[ui].gather_shift;
+    let (x, y) = (x + shift.0, y + shift.1);
     w.units[ui].draw_x = x;
     w.units[ui].draw_y = y;
     let color = w.glcolor(w.igloo_player(ui));
@@ -57,30 +86,21 @@ fn draw_unit(w: &mut World, ui: usize) {
     }
     let u = &w.units[ui];
     let frame = u.current_frame.clamp(0, 9) as usize;
-    let dir = u.direction;
     let p = &w.tex.penguins;
-    let pick = |a: &str, b: &str, f: usize| -> (Option<Tex>, Option<Tex>) { (p.get(a).map(|x| x.get(f, dir)), p.get(b).map(|x| x.get(f, dir))) };
-    let (tex, outfit) = match u.state {
-        State::Frozen => (Some(w.tex.frozen), None),
-        State::Unloading => {
-            let h = u.holding.unwrap_or(ResKind::Fish).name();
-            pick(&format!("unload{}", h), &format!("workerunload{}", h), frame)
+    let (tex, outfit) = match &sheet {
+        None => {
+            let (t, o) = w.tex.frozen[u.kind.name()];
+            (Some(t), Some(o))
         }
-        State::Throwing | State::GettingSnowball | State::Gathering => {
-            let s = match u.state {
-                State::Throwing => "throwing",
-                State::GettingSnowball => "getting_snowball",
-                _ => "gathering",
+        Some(s) => {
+            // (the outfit sheet: "worker" + the name, but walking it's the kind's own)
+            let o = match s.strip_prefix("walk") {
+                Some("") => format!("{}walk", u.kind.name()),
+                Some(h) => format!("workerwalk{}", h),
+                None => format!("{}{}", u.kind.name(), s),
             };
-            pick(s, &format!("{}{}", u.kind.name(), s), frame)
-        }
-        _ if u.kind == UnitKind::Worker && u.holding.is_some() => {
-            let h = u.holding.unwrap().name();
-            pick(&format!("walk{}", h), &format!("workerwalk{}", h), frame)
-        }
-        _ => {
-            let f = if u.moving { frame } else { 10 };
-            pick("walk", &format!("{}walk", u.kind.name()), f)
+            let f = if s == "walk" && !u.moving { 10 } else { frame };
+            (p.get(s.as_str()).map(|x| x.get(f, dir)), p.get(o.as_str()).map(|x| x.get(f, dir)))
         }
     };
     if u.selected {
@@ -92,6 +112,16 @@ fn draw_unit(w: &mut World, ui: usize) {
     }
     if let Some(o) = outfit {
         w.draw_buffer.push(Rendered { key, item: DrawItem::Tex { tex: o, x, y, color: tint([color[0], color[1], color[2], 1.0]) } });
+    }
+    if let Some(s) = spot.filter(|s| s.line) {
+        // a fishing line, from the rod down into the hole (once it's there)
+        let tip = sheet.as_deref().and_then(|n| w.tex.penguins.get(n)).and_then(|p| p.tip[dir_index(dir)][frame]);
+        let off = ((s.aim.0 - shift.0).powi(2) + (s.aim.1 - shift.1).powi(2)).sqrt();
+        let alpha = (1.0 - off / 6.0).clamp(0.0, 1.0) as f32 * 0.6;
+        if let (Some(tip), true) = (tip, alpha > 0.0) {
+            let item = DrawItem::Line { from: (x + tip.0, y + tip.1), to: s.centre, width: 0.45, color: [0.12, 0.13, 0.18, alpha] };
+            w.draw_buffer.push(Rendered { key: (key.0, key.1 + 0.01, key.2), item });
+        }
     }
     if u.state == State::Frozen {
         // a little flag in its team's colour stuck in the snow beside the ice
@@ -129,6 +159,85 @@ fn draw_unit(w: &mut World, ui: usize) {
         let (tw, _) = w.stat_font.size_of(to);
         w.stat_font.render(x + 16.0 - tw as f64 / 2.0, y - 12.0, to, [0.1, 0.12, 0.25, 1.0]);
     }
+}
+
+/// The penguin sheet a penguin is drawn with (`Textures::penguins`), or
+/// None for the frozen picture.
+fn sheet_name(w: &World, u: &Unit) -> Option<String> {
+    Some(match u.state {
+        State::Frozen => return None,
+        State::Unloading => format!("unload{}", u.holding.unwrap_or(ResKind::Fish).name()),
+        State::Throwing => "throwing".into(),
+        State::GettingSnowball => "getting_snowball".into(),
+        State::Gathering if gathered(w, u) == Some(ResKind::Crystal) => "gatheringcrystal".into(),
+        State::Gathering => "gathering".into(),
+        _ if u.kind == UnitKind::Worker && u.holding.is_some() => format!("walk{}", u.holding.unwrap().name()),
+        _ => "walk".into(),
+    })
+}
+
+/// What a gathering penguin works on (in the tile it faces).
+fn gathered(w: &World, u: &Unit) -> Option<ResKind> {
+    let (dx, dy) = u.direction;
+    let r = w.tiles[w.tile_index(u.x + dx, u.y + dy)?].resource?;
+    Some(w.resources[r].kind)
+}
+
+/// How penguins gather round a resource.
+struct GatherRing {
+    /// where its picture is drawn, from where the map puts it
+    offset: (f64, f64),
+    /// flat on the ground (drawn under the penguins)
+    flat: bool,
+    /// the middle of it, on the ground, in its picture
+    centre: (f64, f64),
+    /// how far from that its gatherers stand: beside it, behind it (above)
+    /// and in front of it (below: they would hide it)
+    ring: (f64, f64, f64),
+    /// a line from the tool into it (fishing)
+    line: bool,
+}
+
+fn gather_ring(kind: ResKind) -> Option<GatherRing> {
+    match kind {
+        // (the hole is painted high in its tile: down to where the feet of
+        // the penguins round it are)
+        ResKind::Fish => Some(GatherRing { offset: (-1.0, 12.0), flat: true, centre: (17.7, 13.9), ring: (29.0, 27.0, 33.0), line: true }),
+        ResKind::Crystal => Some(GatherRing { offset: (0.0, 0.0), flat: false, centre: (16.3, 21.0), ring: (30.0, 24.0, 30.0), line: false }),
+        // anything new to gather: round the middle of its tile
+        k if k.gatherable() => Some(GatherRing { offset: (0.0, 0.0), flat: false, centre: (16.0, 20.0), ring: (30.0, 24.0, 30.0), line: false }),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GatherSpot {
+    /// how far to draw the penguin from its place on its tile
+    aim: (f64, f64),
+    /// the middle of what it gathers, in the world
+    centre: (f64, f64),
+    line: bool,
+}
+
+/// A gathering penguin, drawn at (x, y) with its feet at `feet` in its
+/// sprite: where it should be drawn instead, on a ring round what it
+/// gathers like the others there.
+fn gather_spot(w: &World, u: &Unit, x: f64, y: f64, feet: Option<(f64, f64)>) -> Option<GatherSpot> {
+    if u.state != State::Gathering {
+        return None;
+    }
+    let feet = feet?;
+    let (dx, dy) = u.direction;
+    let r = &w.resources[w.tiles[w.tile_index(u.x + dx, u.y + dy)?].resource?];
+    let g = gather_ring(r.kind)?;
+    let centre = (r.x + g.offset.0 + g.centre.0, r.y + g.offset.1 + g.centre.1);
+    let n = ((dx * dx + dy * dy) as f64).sqrt();
+    let ry = if dy > 0 { g.ring.1 } else { g.ring.2 };
+    let (sx, sy) = (centre.0 - dx as f64 / n * g.ring.0 - (x + feet.0), centre.1 - dy as f64 / n * ry - (y + feet.1));
+    // (not far off its tile, whatever the hills)
+    let l = (sx * sx + sy * sy).sqrt();
+    let m = if l > 32.0 { 32.0 / l } else { 1.0 };
+    Some(GatherSpot { aim: (sx * m, sy * m), centre, line: g.line })
 }
 
 fn draw_building(w: &mut World, bi: usize) {
@@ -227,8 +336,17 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
     // resources (trees, fish, ...)
     for r in &w.resources {
         let t = r.texture();
-        if r.x + t.w as f64 > v.x && r.x < v.x + vw && r.y + t.h as f64 > v.y && r.y < v.y + vh {
-            w.draw_buffer.push(Rendered::tex(t, r.x, r.y, 1, [1.0; 4]));
+        let ring = gather_ring(r.kind);
+        let off = ring.as_ref().map(|g| g.offset).unwrap_or((0.0, 0.0));
+        let (x, y) = (r.x + off.0, r.y + off.1);
+        if x + t.w as f64 > v.x && x < v.x + vw && y + t.h as f64 > v.y && y < v.y + vh {
+            if ring.is_some_and(|g| g.flat) {
+                // flat: under the penguins on its tile and round it
+                let key = (1, r.y + t.h as f64 - 32.5, -x);
+                w.draw_buffer.push(Rendered { key, item: DrawItem::Tex { tex: t, x, y, color: [1.0; 4] } });
+            } else {
+                w.draw_buffer.push(Rendered::tex(t, x, y, 1, [1.0; 4]));
+            }
         }
     }
 
@@ -262,7 +380,7 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
         unit::animate(w, ui, dt as f64);
         let (cx, cy) = w.units[ui].sprite_xy(gfx::time());
         if cx + 64.0 > v.x && cx < v.x + vw + 64.0 && cy + 64.0 > v.y && cy < v.y + vh + 64.0 {
-            draw_unit(w, ui);
+            draw_unit(w, ui, dt as f64);
         }
     }
     // igloos
@@ -277,8 +395,13 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
     let mut buf = std::mem::take(&mut w.draw_buffer);
     buf.sort_by(|a, b| a.key.partial_cmp(&b.key).unwrap_or(std::cmp::Ordering::Equal));
     for r in &buf {
-        let DrawItem::Tex { tex, x, y, color } = &r.item;
-        tex.draw(*x, *y, *color, 1.0);
+        match &r.item {
+            DrawItem::Tex { tex, x, y, color } => tex.draw(*x, *y, *color, 1.0),
+            DrawItem::Line { from, to, width, color } => {
+                let width = (width * gfx::transform().2).max(0.6);
+                gfx::draw_line_smooth(from.0, from.1, to.0, to.1, width, *color);
+            }
+        }
     }
     buf.clear();
     w.draw_buffer = buf;
@@ -335,6 +458,7 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
         w.chat_font.render(10.0, 0.0, &format!("{}_", w.chat.msg), [1.0; 4]);
     }
     draw_messages(w);
+    hud::draw_resources(w);
     hud::draw_panel(w);
     s.minimap.draw(w);
     if w.show_fps {
@@ -352,9 +476,10 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
         // a banner at the bottom
         let text = "Spectating - you were defeated  (Esc: menu)";
         let (tw, th) = w.chat_font.size_of(text);
-        let (x, y) = ((sw - tw as f64) / 2.0, 12.0);
-        gfx::fill_rect(x - 12.0, y - 6.0, tw as f64 + 24.0, th as f64 + 12.0, Some([0.0, 0.0, 0.0, 0.55]));
-        w.chat_font.render(x, y, text, [1.0, 1.0, 1.0, 1.0]);
+        let (tw, th) = (tw as f64, th as f64);
+        let (x, top) = ((sw - tw) / 2.0, sh - hud::MARGIN - th - 20.0);
+        crate::glass::panel(x - 18.0, top, tw + 36.0, th + 20.0);
+        crate::glass::text(w.chat_font, x, top + 10.0, text, crate::glass::TEXT);
     }
     if let Some(m) = &s.game_menu {
         m.draw();
@@ -376,7 +501,8 @@ pub fn draw(s: &mut Session, w: &mut World, dt: u32) {
 pub fn draw_messages(w: &mut World) {
     let now = w.now();
     let lh = w.chat_font.size as f64 / 0.63;
-    let mut y = lh;
+    // (under what you have and the alert, top left)
+    let mut y = lh + 124.0;
     let mut remove_first = false;
     let mut first = false;
     let vh = w.view.h as f64;
@@ -398,7 +524,7 @@ pub fn draw_messages(w: &mut World) {
         }
         let alpha = alpha.clamp(0.0, 1.0);
         first = true;
-        font.render(10.0, vh - y, &m.msg, [m.color[0], m.color[1], m.color[2], alpha as f32]);
+        font.render(hud::MARGIN + 4.0, vh - y, &m.msg, [m.color[0], m.color[1], m.color[2], alpha as f32]);
         if alpha == 0.0 {
             remove_first = true;
         }
@@ -411,6 +537,10 @@ pub fn draw_messages(w: &mut World) {
 
 /// How long a hit penguin flashes blue (ms).
 const HIT_FLASH_MS: u32 = 160;
+
+/// How quickly gathering penguins spring onto their ring (per second;
+/// settled in about 5 / this).
+const GATHER_SPRING: f64 = 11.0;
 
 /// One tick of the time of day (88 ticks a day: 4 minutes).
 pub const TIME_TICK_MS: f64 = 2.0 * 1000.0 * 60.0 / 44.0;
@@ -480,15 +610,17 @@ fn draw_thaw_countdown(s: &Session, w: &mut World, now: u32) {
         let top = (y - w.view.y) * w.view.zoom;
         let (tw, th) = w.chat_font.size_of(&text);
         let (tw, th) = (tw as f64, th as f64);
-        let bx = (cx - tw / 2.0).round();
-        let by = (sh - top + 8.0).round();
-        gfx::fill_rect(bx - 8.0, by - 4.0, tw + 16.0, th + 8.0, Some([0.07, 0.09, 0.16, 0.8]));
-        w.chat_font.render(bx, by, &text, [0.75, 0.92, 1.0, 1.0]);
+        let (bx, bh) = ((cx - tw / 2.0).round(), th + 12.0);
+        let btop = (top - 8.0 - bh).round();
+        let _ = sh;
+        crate::glass::tinted_panel(bx - 12.0, btop, tw + 24.0, bh, bh / 2.0, crate::glass::GLASS, crate::glass::EDGE);
+        crate::glass::text(w.chat_font, bx, btop + 6.0, &text, [0.75, 0.92, 1.0, 1.0]);
     }
 }
 
 /// Top middle: "Power-ups in 42s" (and "New power-ups!" right after a drop).
 fn draw_drop_countdown(w: &World, now: u32) {
+    use crate::glass;
     let Some(at) = w.powerup_drop_at else { return };
     let (sw, sh) = (w.view.w as f64, w.view.h as f64);
     let fresh = w.powerup_dropped_at.is_some_and(|t| now.wrapping_sub(t) < 4000);
@@ -503,25 +635,33 @@ fn draw_drop_countdown(w: &World, now: u32) {
     };
     let soon = !fresh && secs <= 5;
     let font = w.chat_font;
-    let (tw, th) = font.size_of(&text);
-    let (tw, th) = (tw as f64, th as f64);
-    // (the orb fills about 18 of the picture's 32 pixels, centred at 15,16)
-    let scale = 1.25;
-    let icon = 18.0 * scale;
-    let width = icon + 10.0 + tw;
+    // a pill: a ring filling up to the drop with the orb in it, the text
+    let (number, prefix) = if fresh || left <= 0 { (String::new(), text.clone()) } else { (format!("{}s", secs), "Power-ups in ".to_string()) };
+    let (pw, nw) = (glass::text_w(font, &prefix), glass::text_w(font, &number));
+    let h = 44.0;
+    let width = 8.0 + 30.0 + 12.0 + pw + nw + 18.0;
     let x = ((sw - width) / 2.0).round();
-    let y = sh - th - 14.0;
-    gfx::fill_rect(x - 12.0, y - 6.0, width + 24.0, th + 12.0, Some([0.07, 0.09, 0.16, 0.7]));
+    let top = hud::MARGIN;
+    glass::tinted_panel(x, top, width, h, h / 2.0, glass::GLASS, glass::EDGE);
+    let (cx, cy) = (x + 8.0 + 15.0, top + h / 2.0);
+    let done = if fresh || left <= 0 { 1.0 } else { 1.0 - left as f64 / crate::plugins::DROP_EVERY_MS as f64 };
+    if gfx::arc(cx, cy, 12.5, 15.5, 1.0, [1.0, 1.0, 1.0, 0.15]) {
+        gfx::arc(cx, cy, 12.5, 15.5, done, if soon || fresh { glass::GOLD } else { glass::ICE });
+    }
+    // (the orb fills about 18 of the picture's 32 pixels, centred at 15,16)
     let orb = gfx::texture("plugins/powerup/powerup.png");
-    orb.draw((x - 6.0 * scale).round(), (y + th / 2.0 - 16.0 * scale).round(), [1.0; 4], scale);
+    orb.draw((cx - 15.0).round(), (sh - (cy - 16.0) - 32.0).round(), [1.0; 4], 1.0);
+    let ty = top + (h - glass::text_h(font, &prefix)) / 2.0;
     let color = if fresh {
         [1.0, 0.95, 0.55, 1.0]
     } else if soon {
         [1.0, 0.85, 0.4, 1.0]
     } else {
-        [0.85, 0.93, 1.0, 1.0]
+        glass::TEXT
     };
-    font.render(x + icon + 10.0, y, &text, color);
+    let tx = cx + 15.0 + 12.0;
+    glass::text(font, tx, ty, &prefix, color);
+    glass::text(font, tx + pw, ty, &number, if soon { glass::GOLD } else { glass::ICE });
 }
 
 /// The start countdown (3, 2, 1, Go!) over the middle of the screen.
